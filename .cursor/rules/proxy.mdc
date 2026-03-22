@@ -1,0 +1,58 @@
+---
+description: 当用户提到 proxy、抓包、代理、流量、接口、mock 等关键词时，自动使用 mitmproxy MCP 工具
+alwaysApply: true
+---
+
+# MITM Proxy MCP 使用指南
+
+本项目是一个基于 MCP 的代理抓包服务。当用户需要抓包、查看流量、分析接口、mock 数据时，直接调用 MCP 工具，不要搜索项目文件。
+
+## ⚠️ Mock 核心约束
+
+**"mock"永远是指通过代理拦截 mock 接口返回的 JSON，不是修改源代码。**
+
+- 当用户选中 Model 字段说"mock 成 X" → 找到返回该 Model 的接口，用 `mock_add` 在代理层拦截响应 JSON 并替换字段值
+- 禁止通过修改 Model / Repository / Provider 等源代码来实现 mock
+- 唯一的 mock 途径：调用 `mock_add` 等 MCP 工具
+
+## 可用 MCP 工具（通过 mitmproxy MCP 服务提供）
+
+### 代理管理
+- `proxy_start` — 启动代理（参数: port=8888, setup_proxy=false）
+  - `setup_proxy=true` 会自动设置 Mac Wi-Fi 系统代理
+- `proxy_stop` — 停止代理（参数: port=8888）
+- `proxy_status` — 查看代理状态
+
+### 流量操作
+- `traffic_list` — 列出流量（支持 filter_domain/filter_type/filter_status/filter_url 筛选）
+- `traffic_search` — 搜索流量内容（参数: keyword, search_in=[url/request_body/response_body/all]）
+- `traffic_get_detail` — 获取请求详情（参数: request_id）
+- `traffic_read_body` — 分片读取响应体（参数: request_id, field=response_body, offset, length）
+- `traffic_clear` — 清空流量
+
+### Mock 数据
+- `mock_add` — 添加 mock 规则（参数: name, url_pattern, response_body, method, match_type, status_code, response_headers, delay_ms, enabled）
+  - `match_type` 支持: `contains`（包含，支持 * 通配符）、`exact`（精确匹配）、`regex`（正则匹配）
+- `mock_list` — 列出所有 mock 规则（参数: enabled_only=false）
+- `mock_update` — 更新 mock 规则（参数: rule_id, 以及需要更新的字段）
+- `mock_delete` — 删除 mock 规则（参数: rule_id）
+- `mock_toggle` — 启用/禁用 mock 规则（参数: rule_id, enabled）
+- `mock_clear` — 清空所有 mock 规则
+
+### 证书
+- `get_cert_info` — 获取 CA 证书安装指南
+
+## 典型工作流
+
+### 抓包
+1. 用户说"开始抓包" → 调用 `proxy_start(setup_proxy=true)`
+2. 用户说"抓下 XX 接口" → 先 `proxy_status` 确认代理在运行，然后等用户操作，再用 `traffic_list` + `traffic_search` 查找
+3. 用户说"看下数据" → 用 `traffic_read_body` 读取响应体
+4. 用户说"停止抓包" → 调用 `proxy_stop`
+
+### Mock 数据
+1. 用户说"mock XX 接口" → 调用 `mock_add` 添加规则（name=描述, url_pattern=URL 匹配, response_body=JSON 响应）
+2. 用户说"看下 mock 规则" → 调用 `mock_list`
+3. 用户说"修改 mock 返回" → 调用 `mock_update(rule_id, response_body=新响应)`
+4. 用户说"关闭 mock" → 调用 `mock_toggle(rule_id, enabled=false)` 或 `mock_delete(rule_id)`
+5. Mock 规则实时生效，代理运行时无需重启。被 mock 的请求会在流量日志中标记 `[MOCK]`。

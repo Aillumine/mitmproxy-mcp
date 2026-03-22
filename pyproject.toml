@@ -1,0 +1,47 @@
+[project]
+name = "mitmproxy-mcp"
+version = "1.0.0"
+description = "MITM proxy MCP service - 基于 MCP 的代理抓包服务（支持 Android 和 iOS）"
+requires-python = ">=3.11"
+dependencies = [
+    "mitmproxy>=10.0.0",
+    "mcp>=1.0.0",
+    "loguru>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+mitmproxy-mcp = "mitm_proxy_mcp.server:main"
+mitmproxy-start = "mitm_proxy_mcp.cli.start:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mitm_proxy_mcp"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "requires_device: 需要连接真实 Android 设备",
+    "requires_rooted_device: 需要连接已 root 的 Android 设备（仅用于测试需要 root 权限的功能，普通使用不需要 root）",
+    "requires_ios_simulator: 需要 iOS 模拟器（需要安装 Xcode Command Line Tools）",
+    "requires_ios_device: 需要 iOS 真机（需要安装 libimobiledevice）",
+    "slow: 标记较慢的测试（如网络请求）",
+]

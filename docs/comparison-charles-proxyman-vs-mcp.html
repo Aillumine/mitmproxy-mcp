@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>GateIO Proxy MCP vs Charles/Proxyman 对比文档</title>
+<style>
+  body {
+    font-family: -apple-system, 'PingFang SC', 'Noto Sans SC', sans-serif;
+    background: #fff;
+    color: #1f2329;
+    padding: 40px 60px;
+    line-height: 1.8;
+    font-size: 14px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 24px; font-weight: 700; margin-bottom: 24px; }
+  h2 { font-size: 18px; font-weight: 700; margin: 28px 0 14px; }
+  h3 { font-size: 15px; font-weight: 700; margin: 18px 0 8px; }
+  p { margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+  th { background: #f0f3ff; font-weight: 700; text-align: left; padding: 10px 14px; border: 1px solid #dee0e3; }
+  td { padding: 10px 14px; border: 1px solid #dee0e3; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8f9fa; }
+  code { background: #f0f3ff; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+  .flow-box { background: #f8f9fa; border: 1px solid #dee0e3; border-radius: 8px; padding: 14px 18px; margin: 10px 0; font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
+  .tip-box { background: #f0f3ff; border-left: 4px solid #3370ff; padding: 12px 16px; margin: 14px 0; border-radius: 0 6px 6px 0; }
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid #e5e6eb; margin: 28px 0; }
+  strong { font-weight: 700; }
+  .blue { color: #3370ff; font-weight: 500; }
+</style>
+</head>
+<body>
+
+<h1>GateIO Proxy MCP vs Charles / Proxyman 对比文档</h1>
+
+<h2>一、工具定位对比</h2>
+
+<table>
+  <tr><th>维度</th><th>Charles / Proxyman</th><th>GateIO Proxy MCP</th></tr>
+  <tr><td><strong>本质</strong></td><td>独立的 GUI 抓包工具</td><td>集成在 IDE 中的 AI 驱动抓包 + Mock 服务</td></tr>
+  <tr><td><strong>交互方式</strong></td><td>鼠标点击、菜单操作</td><td>自然语言对话（"帮我找登录接口"）</td></tr>
+  <tr><td><strong>数据消费者</strong></td><td>人眼看</td><td>AI 分析 + 人看</td></tr>
+  <tr><td><strong>工作流</strong></td><td>抓包 → 切到 Charles 看 → 切回 IDE 改代码</td><td>全程在 Cursor 内完成，不切窗口</td></tr>
+  <tr><td><strong>Mock 方式</strong></td><td>GUI 配置 Map Local / Map Remote</td><td>自然语言描述，AI 自动创建规则</td></tr>
+  <tr><td><strong>价格</strong></td><td>Charles $50，Proxyman $49-69/年</td><td>免费开源</td></tr>
+</table>
+
+<hr>
+
+<h2>二、核心优势</h2>
+
+<h3>1. 不用离开 IDE</h3>
+
+<p>传统流程：</p>
+<div class="flow-box">写代码 → 切到 Charles → 找接口 → 看数据 → 切回 IDE → 改代码 → 切到 Charles 验证</div>
+
+<p>MCP 流程：</p>
+<div class="flow-box">写代码 → 对话框里说"帮我找 XX 接口的返回" → AI 直接给你数据 → 继续写代码</div>
+
+<p><strong>窗口切换次数从 6+ 次降到 0 次。</strong></p>
+
+<h3>2. AI 理解你的意图</h3>
+
+<table>
+  <tr><th>你说的话</th><th>Charles 需要你做的</th><th>MCP 自动做的</th></tr>
+  <tr><td>"找持仓列表接口"</td><td>自己在几百条请求里用眼找</td><td>traffic_search 搜索，直接返回匹配的接口</td></tr>
+  <tr><td>"这个接口返回了什么"</td><td>点开请求 → 点 Response → 复制 JSON</td><td>traffic_read_body 读取，AI 直接分析</td></tr>
+  <tr><td>"把 vipLevel mock 成 5"</td><td>Map Local → 新建规则 → 编辑 JSON → 保存</td><td>一句话，AI 自动找到接口、读取原始响应、修改字段、创建规则</td></tr>
+  <tr><td>"对比接口返回和 Model 字段"</td><td>手动复制 JSON → 和代码逐个对比</td><td>AI 自动读取两端数据，输出对比表格</td></tr>
+</table>
+
+<h3>3. Mock 效率差异巨大</h3>
+
+<p><strong>Charles 创建一个 Mock 的步骤（Map Local）：</strong></p>
+<ol>
+  <li>找到目标请求</li>
+  <li>右键 → Map Local</li>
+  <li>选择或创建本地 JSON 文件</li>
+  <li>用编辑器打开 JSON 文件</li>
+  <li>修改目标字段</li>
+  <li>保存</li>
+  <li>刷新验证</li>
+</ol>
+
+<p><strong>MCP 创建一个 Mock 的步骤：</strong></p>
+<ol>
+  <li>说"把 /api/user/info 的 vipLevel mock 成 5"</li>
+  <li>完成</li>
+</ol>
+
+<p><strong>更极端的场景——选中 Model 字段 mock：</strong></p>
+<p>MCP 可以做到你选中一个 Dart Model 的字段，说"mock 成 1"，AI 会：</p>
+<ul>
+  <li>自动分析 Model 类名和 JSON key</li>
+  <li>搜索代码找到哪些 API 返回这个 Model</li>
+  <li>读取这些 API 的实际响应</li>
+  <li>只修改对应字段</li>
+  <li>给所有相关接口创建 mock 规则</li>
+</ul>
+<p>Charles / Proxyman 要实现同样的效果，你需要<strong>自己</strong>完成上面每一步。</p>
+
+<h3>4. 与代码上下文打通</h3>
+<p>MCP 工具运行在 Cursor 内部，AI 同时能看到你的代码和抓到的流量数据。这意味着 AI 可以做 Charles / Proxyman 永远做不到的事：</p>
+<ul>
+  <li>"这个接口返回了哪些字段是 Model 里没有的？"</li>
+  <li>"帮我根据这个接口的返回生成 Dart Model"</li>
+  <li>"对比线上返回和 Model 的字段差异"</li>
+</ul>
+
+<h3>5. 团队协作与自动化</h3>
+<ul>
+  <li>Mock 规则存在 SQLite 中，可以通过脚本导入导出</li>
+  <li>Skill 文件（SKILL.md）可以放在项目仓库里，团队成员 clone 即可使用</li>
+  <li>标准化的抓包/Mock 工作流，减少"我这里能复现你那里不行"的问题</li>
+</ul>
+
+<hr>
+
+<h2>三、劣势与局限</h2>
+
+<table>
+  <tr><th>维度</th><th>说明</th><th>Charles / Proxyman 的优势</th></tr>
+  <tr><td><strong>GUI 可视化</strong></td><td>MCP 没有流量瀑布图、时间线视图</td><td>请求列表、响应预览、JSON 树形视图非常直观</td></tr>
+  <tr><td><strong>实时性</strong></td><td>MCP 需要主动查询，不能实时刷新</td><td>实时展示每一条请求</td></tr>
+  <tr><td><strong>高级抓包功能</strong></td><td>不支持 WebSocket、gRPC、SSL Pinning bypass</td><td>更完整的协议支持</td></tr>
+  <tr><td><strong>断点调试</strong></td><td>不支持请求断点</td><td>支持 Breakpoints 拦截并手动修改</td></tr>
+  <tr><td><strong>带宽限速</strong></td><td>不支持模拟弱网</td><td>Charles 有 Throttle 功能</td></tr>
+  <tr><td><strong>请求重发</strong></td><td>不支持 Compose / Repeat</td><td>可以修改并重发请求</td></tr>
+  <tr><td><strong>独立运行</strong></td><td>依赖 Cursor IDE</td><td>独立应用，不依赖 IDE</td></tr>
+  <tr><td><strong>学习曲线</strong></td><td>需要了解 MCP、Skill 概念</td><td>打开即用</td></tr>
+  <tr><td><strong>稳定性</strong></td><td>AI 理解可能有偏差</td><td>GUI 操作确定性更高</td></tr>
+</table>
+
+<h3>适用场景建议</h3>
+
+<table>
+  <tr><th>场景</th><th>推荐工具</th></tr>
+  <tr><td>日常开发中快速查看接口返回</td><td><span class="blue">MCP</span>（不用切窗口）</td></tr>
+  <tr><td>Mock 接口数据做 UI 调试</td><td><span class="blue">MCP</span>（自然语言创建规则）</td></tr>
+  <tr><td>Model 字段与接口对比</td><td><span class="blue">MCP</span>（AI 自动分析）</td></tr>
+  <tr><td>复杂网络问题排查（SSL、WebSocket）</td><td><strong>Charles / Proxyman</strong></td></tr>
+  <tr><td>模拟弱网、限速测试</td><td><strong>Charles</strong></td></tr>
+  <tr><td>修改请求并重发（API 调试）</td><td><strong>Charles / Proxyman</strong></td></tr>
+  <tr><td>给非开发人员演示接口数据</td><td><strong>Charles / Proxyman</strong>（GUI 更直观）</td></tr>
+  <tr><td>团队标准化 Mock 流程</td><td><span class="blue">MCP</span>（Skill + 规则可版本管理）</td></tr>
+</table>
+
+<hr>
+
+<h2>四、使用教程</h2>
+
+<h3>前置准备</h3>
+<div class="flow-box">1. 安装项目：cd gateio-proxy-mcp && uv sync
+2. 配置 Cursor MCP：Cursor Settings → MCP → 添加 gateio-proxy
+3. 安装 Skill：bash install-skill.sh</div>
+
+<h3>基础用法</h3>
+
+<table>
+  <tr><th>操作</th><th>说法</th></tr>
+  <tr><td>启动代理</td><td>"启动代理" 或终端执行 <code>uv run gateio-proxy-start --setup-proxy</code></td></tr>
+  <tr><td>查看流量</td><td>"显示最近的请求" / "搜索 URL 包含 /api/v1/user 的请求"</td></tr>
+  <tr><td>读取响应</td><td>"读取 req-3 的响应体"</td></tr>
+  <tr><td>创建 Mock</td><td>"把 /api/v1/user/info 的返回 mock 成 {"code": 0, "data": {"vip": 5}}"</td></tr>
+  <tr><td>管理 Mock</td><td>"列出所有 mock 规则" / "关闭第一条 mock 规则"</td></tr>
+  <tr><td>停止代理</td><td>"停止代理"</td></tr>
+</table>
+
+<h3>证书安装（HTTPS 抓包必须）</h3>
+
+<p><strong>iOS 模拟器：</strong></p>
+<ol>
+  <li>模拟器 Safari 访问 <code>http://mitm.it</code></li>
+  <li>下载 Apple 证书</li>
+  <li>设置 → 通用 → VPN与设备管理 → 安装</li>
+  <li>设置 → 通用 → 关于本机 → 证书信任设置 → 启用</li>
+</ol>
+
+<p><strong>Mac 浏览器：</strong></p>
+<ol>
+  <li>浏览器访问 <code>http://mitm.it</code> → 下载证书</li>
+  <li>双击安装到钥匙串</li>
+  <li>钥匙串中找到 mitmproxy → 信任 → "始终信任"</li>
+</ol>
+
+<hr>
+
+<h2>五、效率提升技巧</h2>
+
+<table>
+  <tr><th>技巧</th><th>说明</th><th>示例说法</th></tr>
+  <tr><td><strong>选中字段直接 Mock</strong></td><td>选中 Dart Model 属性，AI 自动找接口、读响应、改字段、建规则</td><td>选中 vipLevel 字段 → "mock 成 5"</td></tr>
+  <tr><td><strong>批量 Mock 边界</strong></td><td>一句话覆盖多个测试场景</td><td>"把 list 字段分别 mock 成空数组、1 条、100 条"</td></tr>
+  <tr><td><strong>基于真实数据微调</strong></td><td>先抓包拿真实数据，再修改特定字段 mock</td><td>"把 price 改成 0，其他不变，mock 这个接口"</td></tr>
+  <tr><td><strong>接口对比发现问题</strong></td><td>AI 自动对比接口返回和 Model 字段差异</td><td>"对比 /api/user/info 返回和 UserInfoModel 字段"</td></tr>
+  <tr><td><strong>Mock 异常状态码</strong></td><td>测试错误处理逻辑</td><td>"把 /api/payment/create mock 成 500"</td></tr>
+  <tr><td><strong>模拟延迟</strong></td><td>测试 loading UI 表现</td><td>"mock 正常返回，但延迟 3 秒"</td></tr>
+  <tr><td><strong>快速开关 Mock</strong></td><td>调试完禁用而不删除，方便反复测试</td><td>"关闭所有 mock" / "打开所有 mock"</td></tr>
+  <tr><td><strong>抓包 + Mock 回归</strong></td><td>抓正常数据后逐个 mock 异常值验证</td><td>不污染代码，比 if(debug) 更干净</td></tr>
+</table>
+
+<hr>
+
+<h2>六、总结</h2>
+
+<div class="tip-box">
+  <strong>GateIO Proxy MCP 不是要替代 Charles / Proxyman，而是补充它们在 AI 开发工作流中的不足。</strong>
+  <ul style="margin-top: 8px;">
+    <li>需要<strong>快速查看/Mock 接口数据</strong>且不想离开 IDE → 用 MCP</li>
+    <li>需要<strong>深度网络调试</strong>（断点、重发、限速、WebSocket） → 用 Charles / Proxyman</li>
+    <li>两者可以同时使用，MCP 代理和 Charles 代理可以配置不同端口</li>
+  </ul>
+</div>
+
+</body>
+</html>

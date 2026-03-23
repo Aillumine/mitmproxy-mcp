@@ -14,6 +14,13 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+# update() 允许修改的列，防止 SQL 注入
+_ALLOWED_UPDATE_COLUMNS = frozenset({
+    "name", "url_pattern", "method", "status_code",
+    "response_headers", "response_body", "delay_ms",
+    "enabled", "match_type", "updated_at",
+})
+
 DEFAULT_MOCK_DB_PATH = Path("/tmp/mitmproxy-mock.db")
 
 
@@ -140,12 +147,17 @@ class MockStore:
         set_clauses = []
         params = []
         for key, value in kwargs.items():
+            if key not in _ALLOWED_UPDATE_COLUMNS:
+                continue  # 忽略非法列名，防止 SQL 注入
             if key == "response_headers" and isinstance(value, dict):
                 value = json.dumps(value)
             if key == "enabled":
                 value = 1 if value else 0
             set_clauses.append(f"{key} = ?")
             params.append(value)
+
+        if not set_clauses:
+            return False
 
         params.append(rule_id)
 

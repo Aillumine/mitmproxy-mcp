@@ -28,6 +28,8 @@ from .tools import (
     mock_delete,
     mock_toggle,
     mock_clear,
+    mock_export,
+    mock_import,
     android_list_devices,
     android_get_device_info,
     android_setup_proxy,
@@ -126,6 +128,14 @@ async def list_tools() -> list[Tool]:
                     "filter_url": {
                         "type": "string",
                         "description": "按 URL 筛选，支持正则表达式",
+                    },
+                    "start_time": {
+                        "type": "number",
+                        "description": "开始时间（Unix 时间戳），筛选该时间之后的请求",
+                    },
+                    "end_time": {
+                        "type": "number",
+                        "description": "结束时间（Unix 时间戳），筛选该时间之前的请求",
                     },
                 },
             },
@@ -366,6 +376,30 @@ async def list_tools() -> list[Tool]:
             description="清空所有 mock 规则",
             inputSchema={"type": "object", "properties": {}},
         ),
+        Tool(
+            name="mock_export",
+            description="导出所有 mock 规则为 JSON 字符串，包含完整响应体。可用于备份或跨设备迁移。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="mock_import",
+            description="从 JSON 字符串导入 mock 规则。支持规则数组或 {\"rules\": [...]} 格式。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rules_json": {
+                        "type": "string",
+                        "description": "规则 JSON 字符串（来自 mock_export 的 rules 字段）",
+                    },
+                    "merge": {
+                        "type": "boolean",
+                        "description": "True 则追加到现有规则，False 则先清空再导入（默认）",
+                        "default": False,
+                    },
+                },
+                "required": ["rules_json"],
+            },
+        ),
         # Android 工具
         Tool(
             name="android_list_devices",
@@ -511,6 +545,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             filter_type=arguments.get("filter_type"),
             filter_status=arguments.get("filter_status"),
             filter_url=arguments.get("filter_url"),
+            start_time=arguments.get("start_time"),
+            end_time=arguments.get("end_time"),
         )
     elif name == "traffic_get_detail":
         result = traffic_get_detail(arguments["request_id"])
@@ -571,6 +607,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         )
     elif name == "mock_clear":
         result = mock_clear()
+    elif name == "mock_export":
+        result = mock_export()
+    elif name == "mock_import":
+        result = mock_import(
+            rules_json=arguments["rules_json"],
+            merge=arguments.get("merge", False),
+        )
 
     # Android 工具（异步）
     elif name == "android_list_devices":

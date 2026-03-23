@@ -140,6 +140,8 @@ class SQLiteTrafficStore:
         filter_type: str | None = None,
         filter_status: str | None = None,
         filter_url: str | None = None,
+        start_time: float | None = None,
+        end_time: float | None = None,
     ) -> list[TrafficRecord]:
         """
         查询流量记录
@@ -181,6 +183,14 @@ class SQLiteTrafficStore:
             # SQLite 不支持正则，使用 LIKE
             conditions.append("url LIKE ?")
             params.append(f"%{filter_url}%")
+
+        if start_time is not None:
+            conditions.append("timestamp >= ?")
+            params.append(start_time)
+
+        if end_time is not None:
+            conditions.append("timestamp <= ?")
+            params.append(end_time)
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         params.extend([limit, offset])
@@ -469,17 +479,16 @@ class SQLiteTrafficStore:
             return None
         
         with self._get_conn() as conn:
-            # 使用参数化查询，field 已经验证过
-            row = conn.execute(f"""
-                SELECT {field}, LENGTH({field}) as total_size
-                FROM traffic
-                WHERE id = ?
-            """, (request_id,)).fetchone()
+            if field == "request_body":
+                sql = "SELECT request_body AS body, LENGTH(request_body) AS total_size FROM traffic WHERE id = ?"
+            else:
+                sql = "SELECT response_body AS body, LENGTH(response_body) AS total_size FROM traffic WHERE id = ?"
+            row = conn.execute(sql, (request_id,)).fetchone()
 
             if not row:
                 return None
 
-            body = row[field]
+            body = row["body"]
             total_size = row["total_size"] or 0
 
             if body is None:

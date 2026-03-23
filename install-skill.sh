@@ -10,7 +10,7 @@ CURSOR_MCP_CONFIG="$HOME/.cursor/mcp.json"
 CLAUDE_MCP_CONFIG="$HOME/.claude.json"
 ANTIGRAVITY_MCP_CONFIG="$HOME/.gemini/antigravity/mcp_config.json"
 
-MCP_SERVER_NAME="mitmproxy"
+MCP_SERVER_NAME="user-mitmproxy"
 
 echo "=========================================="
 echo "  MITM Proxy MCP 一键安装"

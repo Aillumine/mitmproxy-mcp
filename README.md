@@ -53,11 +53,19 @@ uv sync
 
 ### 3. 一键安装（推荐）
 
+**远程安装（无需手动 clone，直接运行）：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Aillumine/mitmproxy-mcp/main/install.sh | bash
+```
+
+自动完成：clone 到 `~/.mitmproxy-mcp`、安装依赖、配置 MCP、安装用户级 Skill，支持 Cursor、Claude Code、Antigravity。
+
+**本地安装（已 clone 仓库时）：**
+
 ```bash
 bash install-skill.sh
 ```
-
-自动完成：安装依赖、配置 MCP、安装 Cursor Skill，支持 Cursor、Claude Code、Antigravity。
 
 ### 4. 手动配置 MCP
 
@@ -68,7 +76,7 @@ bash install-skill.sh
 ```json
 {
   "mcpServers": {
-    "mitmproxy": {
+    "user-mitmproxy": {
       "command": "uv",
       "args": ["--directory", "/path/mitmproxy-mcp", "run", "mitmproxy-mcp"]
     }
@@ -81,7 +89,7 @@ bash install-skill.sh
 ```json
 {
   "mcpServers": {
-    "mitmproxy": {
+    "user-mitmproxy": {
       "command": "uv",
       "args": ["--directory", "/path/mitmproxy-mcp", "run", "mitmproxy-mcp"]
     }
@@ -94,7 +102,7 @@ bash install-skill.sh
 ```json
 {
   "mcpServers": {
-    "mitmproxy": {
+    "user-mitmproxy": {
       "command": "uv",
       "args": ["--directory", "/path/mitmproxy-mcp", "run", "mitmproxy-mcp"]
     }

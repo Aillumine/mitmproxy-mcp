@@ -22,6 +22,8 @@ def traffic_list(
     filter_type: str | None = None,
     filter_status: str | None = None,
     filter_url: str | None = None,
+    start_time: float | None = None,
+    end_time: float | None = None,
 ) -> dict[str, Any]:
     """
     列出捕获的流量
@@ -58,6 +60,8 @@ def traffic_list(
         filter_type=filter_type,
         filter_status=filter_status,
         filter_url=filter_url,
+        start_time=start_time,
+        end_time=end_time,
     )
 
     store_size = len(store)
@@ -255,23 +259,3 @@ def traffic_clear() -> dict[str, Any]:
     }
 
 
-def proxy_status() -> dict[str, Any]:
-    """
-    获取代理状态
-
-    Returns:
-        代理状态信息
-    """
-    if not SQLiteTrafficStore.exists():
-        return {
-            "running": False,
-            "message": "代理未启动。请先运行: uv run mitmproxy-start",
-        }
-
-    store = _get_store()
-    return {
-        "running": True,
-        "message": "代理正在运行（通过 mitmproxy-start 启动）",
-        "traffic_count": len(store),
-        "db_path": str(SQLiteTrafficStore.get_default_path()),
-    }

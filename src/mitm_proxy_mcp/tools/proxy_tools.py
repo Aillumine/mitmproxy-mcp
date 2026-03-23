@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..android.cert_injector import CertHelper
+from ..core.sqlite_store import SQLiteTrafficStore
 
 # PID 文件路径（用于跟踪代理进程）
 PID_FILE = Path("/tmp/mitmproxy-mcp.pid")
@@ -276,6 +277,28 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False) -> dict[str, Any]:
             "success": False,
             "message": f"启动代理时出错: {e}",
         }
+
+
+def proxy_status() -> dict[str, Any]:
+    """
+    获取代理状态
+
+    Returns:
+        代理状态信息
+    """
+    if not SQLiteTrafficStore.exists():
+        return {
+            "running": False,
+            "message": "代理未启动。请先运行: uv run mitmproxy-start",
+        }
+
+    store = SQLiteTrafficStore()
+    return {
+        "running": True,
+        "message": "代理正在运行（通过 mitmproxy-start 启动）",
+        "traffic_count": len(store),
+        "db_path": str(SQLiteTrafficStore.get_default_path()),
+    }
 
 
 def proxy_stop(port: int = 8888) -> dict[str, Any]:

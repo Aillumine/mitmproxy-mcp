@@ -35,7 +35,7 @@ description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口�
 
 | 工具 | 用途 | 关键参数 |
 |------|------|----------|
-| `traffic_list` | 列出最近流量 | `limit`(最大10), `offset`, `filter_domain`, `filter_url`(支持正则), `filter_type`, `filter_status` |
+| `traffic_list` | 列出最近流量 | `limit`(最大10), `offset`, `filter_domain`, `filter_url`(支持正则), `filter_type`, `filter_status`, `start_time`(Unix时间戳), `end_time`(Unix时间戳) |
 | `traffic_search` | 搜索流量内容 | `keyword`(必填), `search_in`(url/request_body/response_body/all等), `method`, `domain`, `limit` |
 | `traffic_get_detail` | 获取请求元数据 | `request_id`(必填，从list/search获取) |
 | `traffic_read_body` | 读取请求体/响应体 | `request_id`(必填), `field`(request_body/response_body), `offset`, `length`(默认4000) |
@@ -51,6 +51,8 @@ description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口�
 | `mock_delete` | 删除 mock 规则 | `rule_id`(必填) |
 | `mock_toggle` | 启用/禁用 mock 规则 | `rule_id`(必填), `enabled` |
 | `mock_clear` | 清空所有 mock 规则 | 无 |
+| `mock_export` | 导出所有规则为 JSON | 无 |
+| `mock_import` | 从 JSON 导入规则 | `rules_json`(必填), `merge`(默认false=先清空) |
 
 ### 设备管理
 

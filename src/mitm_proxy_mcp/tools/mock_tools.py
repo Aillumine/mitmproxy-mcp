@@ -5,6 +5,7 @@ Mock 工具
 通过 MCP 工具调用管理 mock 规则。
 """
 
+import json
 import time
 import uuid
 from typing import Any
@@ -233,4 +234,95 @@ def mock_clear() -> dict[str, Any]:
         "success": True,
         "message": f"已清空 {count} 条 mock 规则",
         "cleared_count": count,
+    }
+
+
+def mock_export() -> dict[str, Any]:
+    """
+    导出所有 mock 规则为 JSON（包含完整 response_body）
+
+    Returns:
+        包含全量规则的字典，可直接传给 mock_import
+    """
+    store = _get_mock_store()
+    rules = store.list_all()
+
+    exported = []
+    for r in rules:
+        exported.append({
+            "name": r.name,
+            "url_pattern": r.url_pattern,
+            "method": r.method,
+            "match_type": r.match_type,
+            "status_code": r.status_code,
+            "response_headers": r.response_headers,
+            "response_body": r.response_body,
+            "delay_ms": r.delay_ms,
+            "enabled": r.enabled,
+        })
+
+    return {
+        "success": True,
+        "rules": exported,
+        "total": len(exported),
+    }
+
+
+def mock_import(rules_json: str, merge: bool = False) -> dict[str, Any]:
+    """
+    从 JSON 导入 mock 规则
+
+    Args:
+        rules_json: JSON 字符串，格式为规则数组或 {"rules": [...]}
+        merge: True 则追加到现有规则，False 则先清空再导入（默认）
+
+    Returns:
+        导入结果
+    """
+    try:
+        data = json.loads(rules_json)
+    except json.JSONDecodeError as e:
+        return {"success": False, "message": f"JSON 解析失败: {e}"}
+
+    if isinstance(data, list):
+        rules_data = data
+    elif isinstance(data, dict) and "rules" in data:
+        rules_data = data["rules"]
+    else:
+        return {
+            "success": False,
+            "message": "无效的导入格式，需要规则数组或包含 rules 字段的对象",
+        }
+
+    store = _get_mock_store()
+
+    if not merge:
+        store.clear()
+
+    imported = 0
+    errors = []
+    for item in rules_data:
+        try:
+            rule = MockRule(
+                id=f"mock-{uuid.uuid4().hex[:8]}",
+                name=item.get("name", "imported rule"),
+                url_pattern=item.get("url_pattern", ""),
+                method=(item.get("method", "") or "").upper().replace("*", ""),
+                match_type=item.get("match_type", "contains"),
+                status_code=item.get("status_code", 200),
+                response_headers=item.get("response_headers", {"content-type": "application/json"}),
+                response_body=item.get("response_body", ""),
+                delay_ms=item.get("delay_ms", 0),
+                enabled=item.get("enabled", True),
+            )
+            store.add(rule)
+            imported += 1
+        except Exception as e:
+            errors.append(str(e))
+
+    return {
+        "success": True,
+        "message": f"导入完成：{imported} 条规则" + (f"，{len(errors)} 条失败" if errors else ""),
+        "imported": imported,
+        "errors": errors,
     }

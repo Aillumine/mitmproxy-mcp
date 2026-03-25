@@ -120,9 +120,17 @@ bash install-skill.sh
 
 ### 第一步：启动代理
 
-有两种启动方式：
+有三种启动方式：
 
-**方式一：启动代理 + 自动设置 Mac 系统代理（推荐）**
+**方式一：全局别名（推荐，安装后自动配置）**
+
+```bash
+proxy
+```
+
+安装脚本会自动在 `~/.zshrc` 中添加 `proxy` 别名，新终端窗口直接可用。等同于方式二。
+
+**方式二：启动代理 + 自动设置 Mac 系统代理**
 
 ```bash
 uv run mitmproxy-start --setup-proxy
@@ -130,7 +138,7 @@ uv run mitmproxy-start --setup-proxy
 
 此命令会自动将 Mac Wi-Fi 的 HTTP/HTTPS 代理设置为 `127.0.0.1:8888`，关闭时（Ctrl+C）自动恢复。
 
-**方式二：仅启动代理（手动配置系统代理）**
+**方式三：仅启动代理（手动配置系统代理）**
 
 ```bash
 uv run mitmproxy-start

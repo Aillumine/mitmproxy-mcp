@@ -18,7 +18,7 @@ echo "=========================================="
 echo ""
 
 # 1. 检查 uv
-echo "[1/4] 检查 uv ..."
+echo "[1/5] 检查 uv ..."
 if ! command -v uv &> /dev/null; then
   echo "  ⚠️  未找到 uv，正在安装 ..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -28,14 +28,14 @@ echo "  ✅ uv 已就绪: $(uv --version)"
 
 # 2. 安装 Python 依赖
 echo ""
-echo "[2/4] 安装 Python 依赖 ..."
+echo "[2/5] 安装 Python 依赖 ..."
 cd "$SCRIPT_DIR"
 uv sync --quiet
 echo "  ✅ 依赖安装完成"
 
 # 3. 安装 Cursor Skill
 echo ""
-echo "[3/4] 安装 Cursor Skill ..."
+echo "[3/5] 安装 Cursor Skill ..."
 if [ ! -f "$SKILL_SRC/SKILL.md" ]; then
   echo "  ❌ 找不到 Skill 文件: $SKILL_SRC/SKILL.md"
   exit 1
@@ -46,7 +46,7 @@ echo "  ✅ Skill 已安装到 $SKILL_DST"
 
 # 4. 配置 MCP
 echo ""
-echo "[4/4] 配置 MCP ..."
+echo "[4/5] 配置 MCP ..."
 
 # 通用 MCP 写入函数
 # 用法: add_mcp_entry <config_path> <ide_name>
@@ -106,6 +106,41 @@ echo ""
 echo "  [Antigravity] ~/.gemini/antigravity/mcp_config.json"
 add_mcp_entry "$ANTIGRAVITY_MCP_CONFIG" "Antigravity"
 
+# 5. 配置全局 alias
+echo ""
+echo "[5/5] 配置全局 alias ..."
+
+ALIAS_CMD="alias proxy='uv run --project $SCRIPT_DIR mitmproxy-start --setup-proxy'"
+ALIAS_MARKER="# mitmproxy-mcp alias"
+
+add_alias_to_shell() {
+  local rc_file="$1"
+  local shell_name="$2"
+
+  if [ ! -f "$rc_file" ]; then
+    return
+  fi
+
+  if grep -qF "$ALIAS_MARKER" "$rc_file" 2>/dev/null; then
+    sed -i.bak "/$ALIAS_MARKER/,+1d" "$rc_file" && rm -f "${rc_file}.bak"
+  fi
+
+  echo "$ALIAS_MARKER" >> "$rc_file"
+  echo "$ALIAS_CMD" >> "$rc_file"
+  echo "  ✅ 已写入 $rc_file"
+}
+
+if [ -f "$HOME/.zshrc" ]; then
+  add_alias_to_shell "$HOME/.zshrc" "zsh"
+fi
+if [ -f "$HOME/.bashrc" ]; then
+  add_alias_to_shell "$HOME/.bashrc" "bash"
+fi
+if [ ! -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.bashrc" ]; then
+  touch "$HOME/.zshrc"
+  add_alias_to_shell "$HOME/.zshrc" "zsh"
+fi
+
 echo ""
 echo "=========================================="
 echo "  🎉 安装完成！"
@@ -117,8 +152,9 @@ echo '  💬 "帮我抓包看一下 xx 接口"'
 echo '  💬 "搜索包含 order-list 的请求"'
 echo '  💬 "mock 这个接口返回 {code: 0}"'
 echo ""
-echo "首次使用前，需要在终端启动代理："
+echo "启动代理（二选一）："
 echo ""
-echo "  cd $SCRIPT_DIR"
-echo "  uv run mitmproxy-start --setup-proxy"
+echo "  proxy                # 全局别名（新终端窗口生效）"
+echo "  # 或当前终端立即使用："
+echo "  source ~/.zshrc && proxy"
 echo ""

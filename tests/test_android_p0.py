@@ -313,3 +313,15 @@ class TestAndroidReverseProxy:
         mock_adb.reverse_remove.assert_awaited_once_with("serial-1", "tcp:8888")
         cmd = mock_adb.shell_with_exit_code.call_args.args[1]
         assert "http_proxy :0" in cmd
+        assert mock_adb.method_calls[0][0] == "shell_with_exit_code"
+        assert mock_adb.method_calls[1][0] == "reverse_remove"
+
+    async def test_remove_reverse_failure(self, mock_adb):
+        """reverse_remove 失败时不应误报成功"""
+        mock_adb.reverse_remove.return_value = False
+        mock_adb.shell_with_exit_code.return_value = (0, "")
+
+        result = await android_tools.android_reverse_proxy_remove("serial-1", port=8888)
+
+        assert result["success"] is False
+        assert "移除 reverse 隧道失败" in result["message"]

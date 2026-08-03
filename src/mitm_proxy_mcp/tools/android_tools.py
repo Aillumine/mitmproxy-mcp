@@ -633,7 +633,12 @@ async def android_reverse_proxy_remove(serial: str, port: int = 8888) -> dict[st
         if exit_code != 0:
             return {"success": False, "message": f"清除代理失败: {output.strip()}"}
 
-        await adb.reverse_remove(serial, f"tcp:{port}")
+        removed = await adb.reverse_remove(serial, f"tcp:{port}")
+        if not removed:
+            return {
+                "success": False,
+                "message": f"移除 reverse 隧道失败（tcp:{port}）",
+            }
 
         return {"success": True, "message": f"已移除 reverse 代理（tcp:{port}）"}
 

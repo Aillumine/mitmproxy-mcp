@@ -1,9 +1,7 @@
 """mitmproxy addon 模块测试"""
 
 import importlib
-import os
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -52,6 +50,14 @@ class TestMatchUrl:
 
     def test_contains(self, addon):
         assert addon.match_url("https://a.com/v1/user", "/v1/user", "contains") is True
+
+    def test_contains_wildcard(self, addon):
+        assert (
+            addon.match_url(
+                "https://a.com/v1/abc/user", "/v1/*/user", "contains"
+            )
+            is True
+        )
 
     def test_exact(self, addon):
         assert addon.match_url("https://a.com/x", "https://a.com/x", "exact") is True

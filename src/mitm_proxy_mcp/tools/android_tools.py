@@ -338,6 +338,25 @@ async def _probe_cert(adb, serial: str, store: str, filename: str) -> str:
     return "absent"
 
 
+async def _probe_user_cert(adb, serial: str, filename: str) -> str:
+    """通过 su 探测普通 adbd 无权读取的用户凭据库。"""
+    path = f"{_USER_STORE}/{filename}"
+    command = (
+        f"if test -f {path}; then echo EXISTS; "
+        f"elif test -r {_USER_STORE}; then echo MISSING; "
+        "else echo INACCESSIBLE; fi"
+    )
+    exit_code, output = await adb.root_shell(serial, command)
+
+    if exit_code != 0:
+        return "unknown"
+    if "EXISTS" in output:
+        return "present"
+    if "MISSING" in output:
+        return "absent"
+    return "unknown"
+
+
 async def android_cert_status(serial: str) -> dict[str, Any]:
     """
     检测 mitmproxy CA 证书在设备上的安装状态
@@ -369,7 +388,7 @@ async def android_cert_status(serial: str) -> dict[str, Any]:
         }
 
         if is_rooted:
-            stores["user"] = await _probe_cert(adb, serial, _USER_STORE, filename)
+            stores["user"] = await _probe_user_cert(adb, serial, filename)
         else:
             stores["user"] = "unknown"
 

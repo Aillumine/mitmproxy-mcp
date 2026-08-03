@@ -63,6 +63,7 @@ class TestAndroidCertStatus:
     @pytest.fixture
     def mock_adb(self):
         adb = AsyncMock()
+        adb.root_shell.return_value = (1, "su: permission denied")
         with patch.object(android_tools, "_get_adb", return_value=adb):
             yield adb
 
@@ -114,6 +115,25 @@ class TestAndroidCertStatus:
 
         assert result["stores"]["user"] == "unknown"
 
+    async def test_rooted_user_store_uses_root_shell_and_reports_su_failure_unknown(
+        self, mock_adb, mock_cert
+    ):
+        """adbd 非 root 时用户库探测必须经 su，su 失败不能误报 absent"""
+        mock_adb.get_android_version.return_value = 34
+        mock_adb.is_rooted.return_value = True
+        mock_adb.shell_with_exit_code.return_value = (1, "")
+        mock_adb.root_shell.return_value = (1, "su: permission denied")
+
+        result = await android_tools.android_cert_status("serial-1")
+
+        assert result["stores"]["user"] == "unknown"
+        user_path = "/data/misc/user/0/cacerts-added/c8750f0b.0"
+        assert user_path in mock_adb.root_shell.await_args.args[1]
+        assert all(
+            user_path not in call.args[1]
+            for call in mock_adb.shell_with_exit_code.await_args_list
+        )
+
     async def test_apex_store_checked_on_android_14(self, mock_adb, mock_cert):
         """Android 14+ 系统证书在 APEX 路径"""
         mock_adb.get_android_version.return_value = 34
@@ -136,12 +156,13 @@ class TestAndroidCertStatus:
         mock_adb.get_android_version.return_value = 33
         mock_adb.is_rooted.return_value = True
 
-        async def fake_shell(serial, cmd, **kwargs):
-            if "cacerts-added/c8750f0b.0" in cmd:
+        async def fake_root_shell(serial, cmd, **kwargs):
+            if "/data/misc/user/0/cacerts-added/c8750f0b.0" in cmd:
                 return (0, "EXISTS")
             return (1, "")
 
-        mock_adb.shell_with_exit_code.side_effect = fake_shell
+        mock_adb.shell_with_exit_code.return_value = (1, "")
+        mock_adb.root_shell.side_effect = fake_root_shell
 
         result = await android_tools.android_cert_status("serial-1")
 

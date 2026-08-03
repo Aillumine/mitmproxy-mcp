@@ -1,12 +1,12 @@
 import json
+import os
 import re
+import sqlite3
 import time
 from pathlib import Path
-import sqlite3
 from urllib.parse import urlparse
-from mitmproxy import http
 
-import os
+from mitmproxy import http
 
 # Paths come from the environment so this module stays importable — and
 # therefore testable — instead of being generated as an f-string at runtime.
@@ -79,7 +79,7 @@ def match_url(url, pattern, match_type):
             return False
     else:  # contains
         if "*" in pattern:
-            regex_pattern = re.escape(pattern).replace(r"\\*", ".*")
+            regex_pattern = re.escape(pattern).replace(r"\*", ".*")
             try:
                 return bool(re.search(regex_pattern, url))
             except re.error:

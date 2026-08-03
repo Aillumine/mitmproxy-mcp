@@ -94,12 +94,14 @@ class TestTlsFailure:
 
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         rows = conn.execute(
-            "SELECT domain, status, resource_type, error FROM traffic"
+            "SELECT id, method, domain, status, resource_type, error FROM traffic"
         ).fetchall()
         conn.close()
 
         assert len(rows) == 1
-        domain, status, resource_type, error = rows[0]
+        record_id, method, domain, status, resource_type, error = rows[0]
+        assert record_id.startswith("tls-")
+        assert method == "CONNECT"
         assert domain == "api.flowgpt.com"
         assert status == 0
         assert resource_type == "TLS"

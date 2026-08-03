@@ -233,34 +233,36 @@ def tls_failed_client(data):
         record_id = f"tls-{counter[0]}"
 
         conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO traffic (
-                id, timestamp, method, url, domain, status, resource_type,
-                size, time_ms, request_headers, request_body,
-                request_body_size, response_headers, response_body, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                time.time(),
-                "CONNECT",
-                f"https://{sni}",
-                sni,
-                0,
-                "TLS",
-                0,
-                0.0,
-                "{}",
-                None,
-                0,
-                "{}",
-                None,
-                str(error),
-            ),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO traffic (
+                    id, timestamp, method, url, domain, status, resource_type,
+                    size, time_ms, request_headers, request_body,
+                    request_body_size, response_headers, response_body, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record_id,
+                    time.time(),
+                    "CONNECT",
+                    f"https://{sni}",
+                    sni,
+                    0,
+                    "TLS",
+                    0,
+                    0.0,
+                    "{}",
+                    None,
+                    0,
+                    "{}",
+                    None,
+                    str(error),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
         print(f"[{counter[0]}] [TLS-FAIL] {sni} -> {error}")
 

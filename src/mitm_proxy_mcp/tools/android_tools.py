@@ -364,10 +364,14 @@ async def android_cert_status(serial: str) -> dict[str, Any]:
         is_rooted = await adb.is_rooted(serial)
 
         stores = {
-            "user": await _probe_cert(adb, serial, _USER_STORE, filename),
             "system": await _probe_cert(adb, serial, _SYSTEM_STORE, filename),
             "apex": await _probe_cert(adb, serial, _APEX_STORE, filename),
         }
+
+        if is_rooted:
+            stores["user"] = await _probe_cert(adb, serial, _USER_STORE, filename)
+        else:
+            stores["user"] = "unknown"
 
         # Only the system stores make apps trust the CA. A certificate sitting in
         # the user store is invisible to any app targeting Android 7+ unless that

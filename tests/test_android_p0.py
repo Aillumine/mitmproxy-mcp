@@ -101,6 +101,18 @@ class TestAndroidCertStatus:
         assert result["stores"]["user"] == "unknown"
         assert result["trusted_by_apps"] is False
 
+    async def test_user_store_unknown_on_silent_failure_when_not_rooted(
+        self, mock_adb, mock_cert
+    ):
+        """未 root 时 test -f 静默失败（无 Permission denied）也应返回 unknown"""
+        mock_adb.get_android_version.return_value = 34
+        mock_adb.is_rooted.return_value = False
+        mock_adb.shell_with_exit_code.return_value = (1, "")
+
+        result = await android_tools.android_cert_status("serial-1")
+
+        assert result["stores"]["user"] == "unknown"
+
     async def test_apex_store_checked_on_android_14(self, mock_adb, mock_cert):
         """Android 14+ 系统证书在 APEX 路径"""
         mock_adb.get_android_version.return_value = 34

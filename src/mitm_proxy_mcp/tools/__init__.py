@@ -6,6 +6,7 @@ from .android_tools import (
     android_get_device_info,
     android_get_proxy,
     android_list_devices,
+    android_push_cert,
     android_setup_proxy,
 )
 from .ios_tools import (
@@ -63,6 +64,7 @@ __all__ = [
     "android_clear_proxy",
     "android_get_proxy",
     "android_cert_status",
+    "android_push_cert",
     # iOS tools
     "ios_list_devices",
     "ios_list_simulators",

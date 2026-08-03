@@ -159,3 +159,40 @@ class TestAndroidCertStatus:
 
         assert result["success"] is False
         assert "代理" in result["message"]
+
+
+class TestAndroidPushCert:
+    """推送证书到设备"""
+
+    @pytest.fixture
+    def mock_adb(self):
+        adb = AsyncMock()
+        with patch.object(android_tools, "_get_adb", return_value=adb):
+            yield adb
+
+    async def test_push_returns_remote_path(self, mock_adb):
+        """推送成功后返回设备上的路径和安装指引"""
+        with patch.object(android_tools, "CertHelper") as MockHelper:
+            helper = MockHelper.return_value
+            helper.push_cert_to_device = AsyncMock(
+                return_value="/sdcard/Download/c8750f0b.0"
+            )
+            helper.get_cert_info.return_value.filename = "c8750f0b.0"
+            helper.get_install_instructions.return_value = "安装步骤"
+
+            result = await android_tools.android_push_cert("serial-1")
+
+        assert result["success"] is True
+        assert result["remote_path"] == "/sdcard/Download/c8750f0b.0"
+        assert result["cert_filename"] == "c8750f0b.0"
+        assert result["instructions"] == "安装步骤"
+
+    async def test_cert_missing_locally(self, mock_adb):
+        """本机没有 CA 证书时给出明确提示"""
+        with patch.object(android_tools, "CertHelper") as MockHelper:
+            MockHelper.return_value.get_cert_info.side_effect = FileNotFoundError("x")
+
+            result = await android_tools.android_push_cert("serial-1")
+
+        assert result["success"] is False
+        assert "代理" in result["message"]

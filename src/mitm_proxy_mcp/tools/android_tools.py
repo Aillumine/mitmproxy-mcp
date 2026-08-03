@@ -414,3 +414,39 @@ async def android_cert_status(serial: str) -> dict[str, Any]:
 
     except ADBError as e:
         return {"success": False, "message": f"ADB error: {e}"}
+
+
+async def android_push_cert(serial: str) -> dict[str, Any]:
+    """
+    推送 mitmproxy CA 证书到设备的 /sdcard/Download
+
+    推送只是第一步，用户仍需在系统设置里手动安装，或调用
+    android_inject_system_cert 注入系统凭据库。
+
+    Args:
+        serial: 设备序列号
+
+    Returns:
+        包含设备路径与安装指引的字典
+    """
+    try:
+        adb = _get_adb()
+        helper = CertHelper(adb)
+
+        cert_info = helper.get_cert_info()
+        remote_path = await helper.push_cert_to_device(serial)
+
+        return {
+            "success": True,
+            "remote_path": remote_path,
+            "cert_filename": cert_info.filename,
+            "instructions": helper.get_install_instructions(cert_info),
+        }
+
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "message": "未找到 mitmproxy CA 证书。请先启动代理以生成证书。",
+        }
+    except ADBError as e:
+        return {"success": False, "message": f"ADB error: {e}"}

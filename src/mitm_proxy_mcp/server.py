@@ -18,6 +18,7 @@ from .tools import (
     android_get_device_info,
     android_get_proxy,
     android_list_devices,
+    android_push_cert,
     android_setup_proxy,
     get_cert_info,
     ios_boot_simulator,
@@ -484,6 +485,19 @@ async def list_tools() -> list[Tool]:
                 "required": ["serial"],
             },
         ),
+        Tool(
+            name="android_push_cert",
+            description=(
+                "推送 mitmproxy CA 证书到 Android 设备的 /sdcard/Download 并返回安装指引"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {"type": "string", "description": "设备序列号"},
+                },
+                "required": ["serial"],
+            },
+        ),
         # iOS 工具
         Tool(
             name="ios_list_devices",
@@ -659,6 +673,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         result = await android_get_proxy(arguments["serial"])
     elif name == "android_cert_status":
         result = await android_cert_status(arguments["serial"])
+    elif name == "android_push_cert":
+        result = await android_push_cert(arguments["serial"])
 
     # iOS 工具（异步）
     elif name == "ios_list_devices":

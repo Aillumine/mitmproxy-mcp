@@ -13,34 +13,35 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .tools import (
+    android_cert_status,
+    android_clear_proxy,
+    android_get_device_info,
+    android_get_proxy,
+    android_list_devices,
+    android_setup_proxy,
     get_cert_info,
+    ios_boot_simulator,
+    ios_get_device_info,
+    ios_list_devices,
+    ios_list_real_devices,
+    ios_list_simulators,
+    ios_shutdown_simulator,
+    mock_add,
+    mock_clear,
+    mock_delete,
+    mock_export,
+    mock_import,
+    mock_list,
+    mock_toggle,
+    mock_update,
     proxy_start,
     proxy_status,
     proxy_stop,
-    traffic_list,
-    traffic_get_detail,
-    traffic_search,
-    traffic_read_body,
     traffic_clear,
-    mock_add,
-    mock_list,
-    mock_update,
-    mock_delete,
-    mock_toggle,
-    mock_clear,
-    mock_export,
-    mock_import,
-    android_list_devices,
-    android_get_device_info,
-    android_setup_proxy,
-    android_clear_proxy,
-    android_get_proxy,
-    ios_list_devices,
-    ios_list_simulators,
-    ios_list_real_devices,
-    ios_get_device_info,
-    ios_boot_simulator,
-    ios_shutdown_simulator,
+    traffic_get_detail,
+    traffic_list,
+    traffic_read_body,
+    traffic_search,
 )
 
 # 创建 MCP 服务器
@@ -469,6 +470,20 @@ async def list_tools() -> list[Tool]:
                 "required": ["serial"],
             },
         ),
+        Tool(
+            name="android_cert_status",
+            description=(
+                "检测 mitmproxy CA 证书在 Android 设备上的安装状态"
+                "（用户库/系统库/APEX），并判断 App 是否会信任"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {"type": "string", "description": "设备序列号"},
+                },
+                "required": ["serial"],
+            },
+        ),
         # iOS 工具
         Tool(
             name="ios_list_devices",
@@ -642,6 +657,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         result = await android_clear_proxy(arguments["serial"])
     elif name == "android_get_proxy":
         result = await android_get_proxy(arguments["serial"])
+    elif name == "android_cert_status":
+        result = await android_cert_status(arguments["serial"])
 
     # iOS 工具（异步）
     elif name == "ios_list_devices":

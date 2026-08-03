@@ -7,6 +7,7 @@ Android 工具
 from typing import Any
 
 from ..android.adb_client import ADBClient, ADBError
+from ..android.cert_injector import CertHelper
 
 # 全局 ADB 客户端实例
 _adb_client: ADBClient | None = None
@@ -294,6 +295,117 @@ async def android_get_proxy(serial: str) -> dict[str, Any]:
             "host": host or None,
             "port": port,
             "raw": raw,
+        }
+
+    except ADBError as e:
+        return {"success": False, "message": f"ADB error: {e}"}
+
+
+# Certificate store paths. Android 14 (SDK 34) moved the system store into the
+# Conscrypt APEX, so the legacy path alone is no longer conclusive.
+#
+# 证书凭据库路径。Android 14（SDK 34）起系统库迁到了 Conscrypt APEX，
+# 只查旧路径已经不足以判断。
+_USER_STORE = "/data/misc/user/0/cacerts-added"
+_SYSTEM_STORE = "/system/etc/security/cacerts"
+_APEX_STORE = "/apex/com.android.conscrypt/cacerts"
+
+
+async def _probe_cert(adb, serial: str, store: str, filename: str) -> str:
+    """
+    探测某个凭据库里是否存在指定证书
+
+    Returns:
+        present | absent | unknown（无读权限时为 unknown）
+    """
+    path = f"{store}/{filename}"
+    exit_code, output = await adb.shell_with_exit_code(
+        serial, f"test -f {path} && echo EXISTS"
+    )
+
+    if exit_code == 0 and "EXISTS" in output:
+        return "present"
+
+    # A permission error is not the same as "no certificate": the user store is
+    # unreadable without root, and reporting absent there would tell the user to
+    # install a certificate that may already be installed.
+    #
+    # 权限错误不等于「没有证书」：用户库无 root 读不了，误报 absent 会让用户
+    # 去重复安装一个可能已经装好的证书。
+    if "Permission denied" in output or "denied" in output.lower():
+        return "unknown"
+
+    return "absent"
+
+
+async def android_cert_status(serial: str) -> dict[str, Any]:
+    """
+    检测 mitmproxy CA 证书在设备上的安装状态
+
+    Args:
+        serial: 设备序列号
+
+    Returns:
+        包含三个凭据库状态、是否被 App 信任、以及处理建议的字典
+    """
+    try:
+        cert_info = CertHelper().get_cert_info()
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "message": "未找到 mitmproxy CA 证书。请先启动代理以生成证书。",
+        }
+
+    filename = cert_info.filename
+
+    try:
+        adb = _get_adb()
+        sdk_version = await adb.get_android_version(serial)
+        is_rooted = await adb.is_rooted(serial)
+
+        stores = {
+            "user": await _probe_cert(adb, serial, _USER_STORE, filename),
+            "system": await _probe_cert(adb, serial, _SYSTEM_STORE, filename),
+            "apex": await _probe_cert(adb, serial, _APEX_STORE, filename),
+        }
+
+        # Only the system stores make apps trust the CA. A certificate sitting in
+        # the user store is invisible to any app targeting Android 7+ unless that
+        # app opted in via networkSecurityConfig.
+        #
+        # 只有系统库能让 App 信任 CA。装在用户库里的证书，对任何
+        # targetSdk >= 24 的 App 都是不可见的，除非该 App 主动在
+        # networkSecurityConfig 里声明信任用户证书。
+        trusted = stores["system"] == "present" or stores["apex"] == "present"
+
+        if trusted:
+            advice = "证书已在系统凭据库，App 会信任该 CA。"
+        elif stores["user"] == "present":
+            advice = (
+                "证书只在用户凭据库，Android 7+ 的 App 默认不信任。"
+                "请调用 android_inject_system_cert 注入系统库"
+                "（需要 root 或使用模拟器）。"
+            )
+        elif stores["user"] == "unknown":
+            advice = (
+                "设备未 root，无法读取用户凭据库状态。"
+                "若确认未安装，请先调用 android_push_cert 推送证书后手动安装，"
+                "再用 android_inject_system_cert 注入系统库。"
+            )
+        else:
+            advice = (
+                "设备上未安装证书。请先调用 android_push_cert 推送到 "
+                "/sdcard/Download，再在系统设置里安装。"
+            )
+
+        return {
+            "success": True,
+            "cert_filename": filename,
+            "sdk_version": sdk_version,
+            "is_rooted": is_rooted,
+            "stores": stores,
+            "trusted_by_apps": trusted,
+            "advice": advice,
         }
 
     except ADBError as e:

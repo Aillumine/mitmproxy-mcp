@@ -54,3 +54,96 @@ class TestAndroidGetProxy:
 
         assert result["success"] is False
         assert "device offline" in result["message"]
+
+
+class TestAndroidCertStatus:
+    """检测证书所在的凭据库"""
+
+    @pytest.fixture
+    def mock_adb(self):
+        adb = AsyncMock()
+        with patch.object(android_tools, "_get_adb", return_value=adb):
+            yield adb
+
+    @pytest.fixture
+    def mock_cert(self):
+        """固定证书文件名，避免依赖本机是否已生成 mitmproxy CA"""
+        with patch.object(android_tools, "CertHelper") as MockHelper:
+            MockHelper.return_value.get_cert_info.return_value.filename = "c8750f0b.0"
+            yield MockHelper
+
+    async def test_system_store_present_means_trusted(self, mock_adb, mock_cert):
+        """证书在系统库 → App 信任"""
+        mock_adb.get_android_version.return_value = 33
+        mock_adb.is_rooted.return_value = True
+
+        async def fake_shell(serial, cmd, **kwargs):
+            if "/system/etc/security/cacerts/c8750f0b.0" in cmd:
+                return (0, "EXISTS")
+            return (1, "")
+
+        mock_adb.shell_with_exit_code.side_effect = fake_shell
+
+        result = await android_tools.android_cert_status("serial-1")
+
+        assert result["success"] is True
+        assert result["stores"]["system"] == "present"
+        assert result["trusted_by_apps"] is True
+
+    async def test_user_store_unknown_when_not_rooted(self, mock_adb, mock_cert):
+        """未 root 时读不到用户库，必须返回 unknown 而不是 absent"""
+        mock_adb.get_android_version.return_value = 34
+        mock_adb.is_rooted.return_value = False
+        mock_adb.shell_with_exit_code.return_value = (1, "Permission denied")
+
+        result = await android_tools.android_cert_status("serial-1")
+
+        assert result["stores"]["user"] == "unknown"
+        assert result["trusted_by_apps"] is False
+
+    async def test_apex_store_checked_on_android_14(self, mock_adb, mock_cert):
+        """Android 14+ 系统证书在 APEX 路径"""
+        mock_adb.get_android_version.return_value = 34
+        mock_adb.is_rooted.return_value = True
+
+        async def fake_shell(serial, cmd, **kwargs):
+            if "/apex/com.android.conscrypt/cacerts/c8750f0b.0" in cmd:
+                return (0, "EXISTS")
+            return (1, "")
+
+        mock_adb.shell_with_exit_code.side_effect = fake_shell
+
+        result = await android_tools.android_cert_status("serial-1")
+
+        assert result["stores"]["apex"] == "present"
+        assert result["trusted_by_apps"] is True
+
+    async def test_advice_mentions_root_when_only_user_store(self, mock_adb, mock_cert):
+        """只在用户库时要给出可执行的建议"""
+        mock_adb.get_android_version.return_value = 33
+        mock_adb.is_rooted.return_value = True
+
+        async def fake_shell(serial, cmd, **kwargs):
+            if "cacerts-added/c8750f0b.0" in cmd:
+                return (0, "EXISTS")
+            return (1, "")
+
+        mock_adb.shell_with_exit_code.side_effect = fake_shell
+
+        result = await android_tools.android_cert_status("serial-1")
+
+        assert result["stores"]["user"] == "present"
+        assert result["trusted_by_apps"] is False
+        assert "android_inject_system_cert" in result["advice"]
+
+    async def test_cert_missing_locally(self, mock_adb):
+        """本机还没生成 mitmproxy CA"""
+        with patch.object(android_tools, "CertHelper") as MockHelper:
+            MockHelper.return_value.get_cert_info.side_effect = FileNotFoundError(
+                "no cert"
+            )
+
+            result = await android_tools.android_cert_status("serial-1")
+
+        assert result["success"] is False
+        assert "代理" in result["message"]

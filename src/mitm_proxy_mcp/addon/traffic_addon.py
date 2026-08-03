@@ -205,4 +205,67 @@ def response(flow):
     except Exception as e:
         print(f"Error saving traffic: {e}")
 
+
+def tls_failed_client(data):
+    """
+    记录与客户端的 TLS 握手失败
+
+    证书绑定（SSL Pinning）的表现就是握手阶段直接失败，此时不存在
+    http flow，原来的 response 钩子永远不会被调用，于是界面上什么都
+    看不到。这里把失败连接也写进 traffic 表，让「抓不到包」变成一条
+    可见的红色记录。
+    """
+    try:
+        conn_obj = getattr(data, "conn", None)
+
+        # Fall back defensively: a failed handshake may not have got far enough
+        # to carry an SNI, and an exception here would take down the proxy.
+        #
+        # 防御式取值：握手失败时可能还没走到能拿到 SNI 的阶段，
+        # 而这里抛异常会把整个代理拖垮。
+        sni = getattr(conn_obj, "sni", None) or "unknown"
+        if isinstance(sni, bytes):
+            sni = sni.decode("utf-8", "ignore")
+
+        error = getattr(conn_obj, "error", None) or "TLS handshake failed"
+
+        counter[0] += 1
+        record_id = f"tls-{counter[0]}"
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO traffic (
+                id, timestamp, method, url, domain, status, resource_type,
+                size, time_ms, request_headers, request_body,
+                request_body_size, response_headers, response_body, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                time.time(),
+                "CONNECT",
+                f"https://{sni}",
+                sni,
+                0,
+                "TLS",
+                0,
+                0.0,
+                "{}",
+                None,
+                0,
+                "{}",
+                None,
+                str(error),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        print(f"[{counter[0]}] [TLS-FAIL] {sni} -> {error}")
+
+    except Exception as e:
+        print(f"Error recording TLS failure: {e}")
+
+
 init_db()

@@ -23,6 +23,7 @@ from .android_tools import (
     android_get_device_info,
     android_setup_proxy,
     android_clear_proxy,
+    android_get_proxy,
 )
 from .ios_tools import (
     ios_list_devices,
@@ -59,6 +60,7 @@ __all__ = [
     "android_get_device_info",
     "android_setup_proxy",
     "android_clear_proxy",
+    "android_get_proxy",
     # iOS tools
     "ios_list_devices",
     "ios_list_simulators",

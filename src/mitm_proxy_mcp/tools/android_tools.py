@@ -240,3 +240,61 @@ async def android_clear_proxy(serial: str) -> dict[str, Any]:
             "success": False,
             "message": f"ADB error: {e}",
         }
+
+
+async def android_get_proxy(serial: str) -> dict[str, Any]:
+    """
+    读取设备当前的全局代理设置
+
+    Args:
+        serial: 设备序列号
+
+    Returns:
+        包含代理设置的字典，未设置代理时 proxy 为 None
+    """
+    try:
+        adb = _get_adb()
+
+        # shell_with_exit_code rather than shell: the latter returns the adb
+        # process exit code, which is 0 even when the on-device command fails.
+        #
+        # 用 shell_with_exit_code 而非 shell：后者返回的是 adb 进程的退出码，
+        # 设备上的命令失败时它依然是 0，无法用来判断成败。
+        exit_code, output = await adb.shell_with_exit_code(
+            serial, "settings get global http_proxy"
+        )
+        raw = output.strip()
+
+        if exit_code != 0:
+            return {"success": False, "message": f"读取代理设置失败: {raw}", "raw": raw}
+
+        # Android writes ":0" or "null" when no proxy is configured; treating
+        # either as a real proxy would make the self-check report a false pass.
+        #
+        # 未配置代理时 Android 写入的是 ":0" 或 "null"，若当成真代理，
+        # 连接自检会误报「已配置」。
+        if raw in ("", ":0", "null"):
+            return {
+                "success": True,
+                "proxy": None,
+                "host": None,
+                "port": None,
+                "raw": raw,
+            }
+
+        host, _, port_str = raw.rpartition(":")
+        try:
+            port = int(port_str)
+        except ValueError:
+            host, port = raw, None
+
+        return {
+            "success": True,
+            "proxy": raw,
+            "host": host or None,
+            "port": port,
+            "raw": raw,
+        }
+
+    except ADBError as e:
+        return {"success": False, "message": f"ADB error: {e}"}

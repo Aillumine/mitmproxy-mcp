@@ -34,6 +34,7 @@ from .tools import (
     android_get_device_info,
     android_setup_proxy,
     android_clear_proxy,
+    android_get_proxy,
     ios_list_devices,
     ios_list_simulators,
     ios_list_real_devices,
@@ -457,6 +458,17 @@ async def list_tools() -> list[Tool]:
                 "required": ["serial"],
             },
         ),
+        Tool(
+            name="android_get_proxy",
+            description="读取 Android 设备当前的全局代理设置（用于诊断抓不到包的原因）",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {"type": "string", "description": "设备序列号"},
+                },
+                "required": ["serial"],
+            },
+        ),
         # iOS 工具
         Tool(
             name="ios_list_devices",
@@ -628,6 +640,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         )
     elif name == "android_clear_proxy":
         result = await android_clear_proxy(arguments["serial"])
+    elif name == "android_get_proxy":
+        result = await android_get_proxy(arguments["serial"])
 
     # iOS 工具（异步）
     elif name == "ios_list_devices":

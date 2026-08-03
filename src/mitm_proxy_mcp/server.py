@@ -17,6 +17,7 @@ from .tools import (
     android_clear_proxy,
     android_get_device_info,
     android_get_proxy,
+    android_inject_system_cert,
     android_list_devices,
     android_push_cert,
     android_setup_proxy,
@@ -498,6 +499,21 @@ async def list_tools() -> list[Tool]:
                 "required": ["serial"],
             },
         ),
+        Tool(
+            name="android_inject_system_cert",
+            description=(
+                "把 mitmproxy CA 注入 Android 系统凭据库（需要 root）。"
+                "Android 13 及以下重挂载 /system 持久生效；"
+                "Android 14+ 用 APEX tmpfs 覆盖，重启后失效"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {"type": "string", "description": "设备序列号"},
+                },
+                "required": ["serial"],
+            },
+        ),
         # iOS 工具
         Tool(
             name="ios_list_devices",
@@ -675,6 +691,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         result = await android_cert_status(arguments["serial"])
     elif name == "android_push_cert":
         result = await android_push_cert(arguments["serial"])
+    elif name == "android_inject_system_cert":
+        result = await android_inject_system_cert(arguments["serial"])
 
     # iOS 工具（异步）
     elif name == "ios_list_devices":

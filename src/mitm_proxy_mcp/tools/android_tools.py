@@ -450,3 +450,116 @@ async def android_push_cert(serial: str) -> dict[str, Any]:
         }
     except ADBError as e:
         return {"success": False, "message": f"ADB error: {e}"}
+
+
+async def _run_root_steps(adb, serial: str, commands: list[str]) -> tuple[bool, str]:
+    """
+    按顺序执行一组 root 命令，任一失败即中断
+
+    Returns:
+        (是否全部成功, 失败时的设备输出)
+    """
+    for command in commands:
+        exit_code, output = await adb.root_shell(serial, command)
+        if exit_code != 0:
+            return False, output.strip()
+    return True, ""
+
+
+async def android_inject_system_cert(serial: str) -> dict[str, Any]:
+    """
+    把 mitmproxy CA 证书注入设备的系统凭据库
+
+    Android 13 及以下重新挂载 /system 写入，重启后仍然有效；
+    Android 14+ 的系统库位于只读的 Conscrypt APEX，只能用 tmpfs 覆盖，
+    重启后失效。
+
+    Args:
+        serial: 设备序列号
+
+    Returns:
+        包含注入方式、是否持久、以及限制说明的字典
+    """
+    try:
+        cert_info = CertHelper().get_cert_info()
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "message": "未找到 mitmproxy CA 证书。请先启动代理以生成证书。",
+        }
+
+    filename = cert_info.filename
+
+    try:
+        adb = _get_adb()
+
+        if not await adb.is_rooted(serial):
+            return {
+                "success": False,
+                "message": (
+                    "注入系统凭据库需要 root 权限，该设备未 root。"
+                    "可改用 Android 模拟器（可写系统分区），"
+                    "或在 App 的 debug 构建里通过 networkSecurityConfig 信任用户证书。"
+                ),
+            }
+
+        sdk_version = await adb.get_android_version(serial)
+
+        # Push first so the certificate exists on-device regardless of which
+        # injection path we take below.
+        #
+        # 先推送，保证证书在设备上存在，两条注入路径都要用到它。
+        helper = CertHelper(adb)
+        remote_path = await helper.push_cert_to_device(serial)
+
+        if sdk_version >= 34:
+            # Android 14 moved the system trust store into a read-only APEX.
+            # Overlaying it with tmpfs is the only root-only option, and it lives
+            # in memory: a reboot drops it.
+            #
+            # Android 14 把系统信任库挪进了只读的 APEX。root 环境下只能用 tmpfs
+            # 覆盖，而这个覆盖在内存里，重启即失效。
+            commands = [
+                f"mount -t tmpfs tmpfs {_APEX_STORE}",
+                f"cp {_SYSTEM_STORE}/* {_APEX_STORE}/ 2>/dev/null || true",
+                f"cp {remote_path} {_APEX_STORE}/{filename}",
+                f"chmod 644 {_APEX_STORE}/{filename}",
+                f"chown root:root {_APEX_STORE}/{filename}",
+                f"chcon u:object_r:system_file:s0 {_APEX_STORE}/{filename}",
+            ]
+            ok, output = await _run_root_steps(adb, serial, commands)
+            if not ok:
+                return {"success": False, "message": f"APEX 注入失败: {output}"}
+
+            return {
+                "success": True,
+                "method": "apex_tmpfs",
+                "persistent": False,
+                "message": f"证书已注入 {_APEX_STORE}/{filename}",
+                "warning": (
+                    "该覆盖位于内存，设备重启后失效，需要重新注入；"
+                    "且只对挂载之后启动的进程生效，请重启目标 App。"
+                ),
+            }
+
+        commands = [
+            "mount -o rw,remount /system",
+            f"cp {remote_path} {_SYSTEM_STORE}/{filename}",
+            f"chmod 644 {_SYSTEM_STORE}/{filename}",
+            f"chown root:root {_SYSTEM_STORE}/{filename}",
+            "mount -o ro,remount /system",
+        ]
+        ok, output = await _run_root_steps(adb, serial, commands)
+        if not ok:
+            return {"success": False, "message": f"系统分区写入失败: {output}"}
+
+        return {
+            "success": True,
+            "method": "system_remount",
+            "persistent": True,
+            "message": f"证书已注入 {_SYSTEM_STORE}/{filename}",
+            "warning": "请重启目标 App 以让新的信任链生效。",
+        }
+
+    except ADBError as e:
+        return {"success": False, "message": f"ADB error: {e}"}

@@ -196,3 +196,75 @@ class TestAndroidPushCert:
 
         assert result["success"] is False
         assert "代理" in result["message"]
+
+
+class TestAndroidInjectSystemCert:
+    """注入系统凭据库"""
+
+    @pytest.fixture
+    def mock_adb(self):
+        adb = AsyncMock()
+        with patch.object(android_tools, "_get_adb", return_value=adb):
+            yield adb
+
+    @pytest.fixture
+    def mock_cert(self):
+        with patch.object(android_tools, "CertHelper") as MockHelper:
+            helper = MockHelper.return_value
+            helper.get_cert_info.return_value.filename = "c8750f0b.0"
+            helper.push_cert_to_device = AsyncMock(
+                return_value="/sdcard/Download/c8750f0b.0"
+            )
+            yield MockHelper
+
+    async def test_requires_root(self, mock_adb, mock_cert):
+        """未 root 时不该去尝试 mount，直接给出可执行的替代方案"""
+        mock_adb.is_rooted.return_value = False
+        mock_adb.get_android_version.return_value = 34
+
+        result = await android_tools.android_inject_system_cert("serial-1")
+
+        assert result["success"] is False
+        assert "root" in result["message"]
+        mock_adb.root_shell.assert_not_called()
+
+    async def test_legacy_remount_on_sdk_33(self, mock_adb, mock_cert):
+        """Android 13 及以下走 /system remount"""
+        mock_adb.is_rooted.return_value = True
+        mock_adb.get_android_version.return_value = 33
+        mock_adb.root_shell.return_value = (0, "")
+
+        result = await android_tools.android_inject_system_cert("serial-1")
+
+        assert result["success"] is True
+        assert result["method"] == "system_remount"
+        assert result["persistent"] is True
+        executed = " ".join(c.args[1] for c in mock_adb.root_shell.call_args_list)
+        assert "remount" in executed
+        assert "/system/etc/security/cacerts/c8750f0b.0" in executed
+
+    async def test_apex_tmpfs_on_sdk_34(self, mock_adb, mock_cert):
+        """Android 14+ 走 APEX tmpfs 覆盖，并声明不持久"""
+        mock_adb.is_rooted.return_value = True
+        mock_adb.get_android_version.return_value = 34
+        mock_adb.root_shell.return_value = (0, "")
+
+        result = await android_tools.android_inject_system_cert("serial-1")
+
+        assert result["success"] is True
+        assert result["method"] == "apex_tmpfs"
+        assert result["persistent"] is False
+        assert "重启" in result["warning"]
+        executed = " ".join(c.args[1] for c in mock_adb.root_shell.call_args_list)
+        assert "tmpfs" in executed
+
+    async def test_mount_failure_surfaces_output(self, mock_adb, mock_cert):
+        """mount 失败要把设备的原始输出带回来，否则没法排查"""
+        mock_adb.is_rooted.return_value = True
+        mock_adb.get_android_version.return_value = 33
+        mock_adb.root_shell.return_value = (1, "mount: Read-only file system")
+
+        result = await android_tools.android_inject_system_cert("serial-1")
+
+        assert result["success"] is False
+        assert "Read-only file system" in result["message"]

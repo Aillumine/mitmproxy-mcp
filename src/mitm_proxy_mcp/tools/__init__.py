@@ -8,6 +8,8 @@ from .android_tools import (
     android_inject_system_cert,
     android_list_devices,
     android_push_cert,
+    android_reverse_proxy,
+    android_reverse_proxy_remove,
     android_setup_proxy,
 )
 from .ios_tools import (
@@ -67,6 +69,8 @@ __all__ = [
     "android_cert_status",
     "android_push_cert",
     "android_inject_system_cert",
+    "android_reverse_proxy",
+    "android_reverse_proxy_remove",
     # iOS tools
     "ios_list_devices",
     "ios_list_simulators",

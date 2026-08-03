@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from mitm_proxy_mcp.android.adb_client import ADBError
 from mitm_proxy_mcp.tools import android_tools
 
 
@@ -268,3 +269,47 @@ class TestAndroidInjectSystemCert:
 
         assert result["success"] is False
         assert "Read-only file system" in result["message"]
+
+
+class TestAndroidReverseProxy:
+    """adb reverse 方式接入代理"""
+
+    @pytest.fixture
+    def mock_adb(self):
+        adb = AsyncMock()
+        with patch.object(android_tools, "_get_adb", return_value=adb):
+            yield adb
+
+    async def test_sets_reverse_then_local_proxy(self, mock_adb):
+        """先建立 reverse 隧道，再把设备代理指向 127.0.0.1"""
+        mock_adb.reverse.return_value = True
+        mock_adb.shell_with_exit_code.return_value = (0, "")
+
+        result = await android_tools.android_reverse_proxy("serial-1", port=8888)
+
+        assert result["success"] is True
+        assert result["proxy"] == "127.0.0.1:8888"
+        mock_adb.reverse.assert_awaited_once_with("serial-1", "tcp:8888", "tcp:8888")
+        cmd = mock_adb.shell_with_exit_code.call_args.args[1]
+        assert "settings put global http_proxy 127.0.0.1:8888" in cmd
+
+    async def test_reverse_failure_does_not_set_proxy(self, mock_adb):
+        """隧道没建起来就不能改设备代理，否则设备会彻底断网"""
+        mock_adb.reverse.side_effect = ADBError("device offline")
+
+        result = await android_tools.android_reverse_proxy("serial-1")
+
+        assert result["success"] is False
+        mock_adb.shell_with_exit_code.assert_not_called()
+
+    async def test_remove_clears_both(self, mock_adb):
+        """移除时要同时清掉代理设置和隧道"""
+        mock_adb.reverse_remove.return_value = True
+        mock_adb.shell_with_exit_code.return_value = (0, "")
+
+        result = await android_tools.android_reverse_proxy_remove("serial-1", port=8888)
+
+        assert result["success"] is True
+        mock_adb.reverse_remove.assert_awaited_once_with("serial-1", "tcp:8888")
+        cmd = mock_adb.shell_with_exit_code.call_args.args[1]
+        assert "http_proxy :0" in cmd

@@ -563,3 +563,79 @@ async def android_inject_system_cert(serial: str) -> dict[str, Any]:
 
     except ADBError as e:
         return {"success": False, "message": f"ADB error: {e}"}
+
+
+async def android_reverse_proxy(serial: str, port: int = 8888) -> dict[str, Any]:
+    """
+    通过 adb reverse 让设备经由 127.0.0.1 访问主机代理
+
+    相比全局代理，这种方式不要求设备与主机在同一局域网，
+    也不受 Wi-Fi 切换影响，是真机抓包更可靠的接法。
+
+    Args:
+        serial: 设备序列号
+        port: 主机上的代理端口
+
+    Returns:
+        包含代理地址与隧道信息的字典
+    """
+    try:
+        adb = _get_adb()
+        endpoint = f"tcp:{port}"
+
+        # Establish the tunnel before pointing the device at 127.0.0.1. Doing it
+        # the other way round would leave the device with a proxy that routes
+        # nowhere if the tunnel fails — i.e. no network at all.
+        #
+        # 必须先建隧道再改代理指向。反过来的话，一旦建隧道失败，设备的代理会
+        # 指向一个不存在的本地端口，结果是整机断网。
+        await adb.reverse(serial, endpoint, endpoint)
+
+        exit_code, output = await adb.shell_with_exit_code(
+            serial, f"settings put global http_proxy 127.0.0.1:{port}"
+        )
+        if exit_code != 0:
+            return {"success": False, "message": f"设置代理失败: {output.strip()}"}
+
+        return {
+            "success": True,
+            "proxy": f"127.0.0.1:{port}",
+            "remote": endpoint,
+            "local": endpoint,
+        }
+
+    except ADBError as e:
+        return {"success": False, "message": f"ADB error: {e}"}
+
+
+async def android_reverse_proxy_remove(serial: str, port: int = 8888) -> dict[str, Any]:
+    """
+    移除 adb reverse 代理接入
+
+    Args:
+        serial: 设备序列号
+        port: 主机上的代理端口
+
+    Returns:
+        包含移除状态的字典
+    """
+    try:
+        adb = _get_adb()
+
+        # Clear the proxy first: dropping the tunnel while the device still points
+        # at 127.0.0.1 would black-hole its traffic.
+        #
+        # 先清代理再拆隧道：如果设备还指着 127.0.0.1 就先拆隧道，
+        # 这段时间内设备流量会被黑洞掉。
+        exit_code, output = await adb.shell_with_exit_code(
+            serial, "settings put global http_proxy :0"
+        )
+        if exit_code != 0:
+            return {"success": False, "message": f"清除代理失败: {output.strip()}"}
+
+        await adb.reverse_remove(serial, f"tcp:{port}")
+
+        return {"success": True, "message": f"已移除 reverse 代理（tcp:{port}）"}
+
+    except ADBError as e:
+        return {"success": False, "message": f"ADB error: {e}"}

@@ -20,6 +20,8 @@ from .tools import (
     android_inject_system_cert,
     android_list_devices,
     android_push_cert,
+    android_reverse_proxy,
+    android_reverse_proxy_remove,
     android_setup_proxy,
     get_cert_info,
     ios_boot_simulator,
@@ -514,6 +516,39 @@ async def list_tools() -> list[Tool]:
                 "required": ["serial"],
             },
         ),
+        Tool(
+            name="android_reverse_proxy",
+            description=(
+                "用 adb reverse 让 Android 设备经 127.0.0.1 访问主机代理，"
+                "不要求设备与主机同局域网，比全局代理更稳"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {"type": "string", "description": "设备序列号"},
+                    "port": {
+                        "type": "integer",
+                        "description": "主机代理端口，默认 8888",
+                    },
+                },
+                "required": ["serial"],
+            },
+        ),
+        Tool(
+            name="android_reverse_proxy_remove",
+            description="移除 adb reverse 代理接入，恢复设备网络设置",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {"type": "string", "description": "设备序列号"},
+                    "port": {
+                        "type": "integer",
+                        "description": "主机代理端口，默认 8888",
+                    },
+                },
+                "required": ["serial"],
+            },
+        ),
         # iOS 工具
         Tool(
             name="ios_list_devices",
@@ -693,6 +728,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         result = await android_push_cert(arguments["serial"])
     elif name == "android_inject_system_cert":
         result = await android_inject_system_cert(arguments["serial"])
+    elif name == "android_reverse_proxy":
+        result = await android_reverse_proxy(
+            serial=arguments["serial"],
+            port=arguments.get("port", 8888),
+        )
+    elif name == "android_reverse_proxy_remove":
+        result = await android_reverse_proxy_remove(
+            serial=arguments["serial"],
+            port=arguments.get("port", 8888),
+        )
 
     # iOS 工具（异步）
     elif name == "ios_list_devices":

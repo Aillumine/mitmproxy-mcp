@@ -33,3 +33,4 @@ build/
 # Temp files
 /tmp/
 *.log
+.worktrees/

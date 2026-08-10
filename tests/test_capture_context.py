@@ -1,3 +1,5 @@
+import pytest
+
 from mitm_proxy_mcp.control.capture_context import (
     get_capture_target,
     resolve_setup_proxy,
@@ -5,8 +7,14 @@ from mitm_proxy_mcp.control.capture_context import (
 )
 
 
-def test_default_mac(monkeypatch):
-    # reset module state if needed
+@pytest.fixture(autouse=True)
+def reset_capture_target():
+    set_capture_target("mac")
+    yield
+    set_capture_target("mac")
+
+
+def test_default_mac():
     set_capture_target("mac")
     assert get_capture_target() == "mac"
 
@@ -29,6 +37,7 @@ def test_mac_allows_explicit_true():
     set_capture_target("mac")
     allowed, reason = resolve_setup_proxy(True)
     assert allowed is True
+    assert reason is None
 
 
 def test_proxy_start_strips_setup_proxy_for_device(monkeypatch):
@@ -59,4 +68,5 @@ def test_proxy_start_strips_setup_proxy_for_device(monkeypatch):
     result = proxy_tools.proxy_start(setup_proxy=True)
 
     assert "--setup-proxy" not in captured.get("cmd", [])
+    assert result["setup_proxy"] is False
     assert "device" in result.get("message", "").lower() or result.get("setup_proxy_blocked")

@@ -22,12 +22,14 @@ from mitm_proxy_mcp.control.runtime import (
     RuntimeInfo,
     clear_runtime,
     generate_token,
+    read_runtime,
     write_runtime,
 )
 from mitm_proxy_mcp.tools.proxy_tools import proxy_stop
 
 CONTROL_HOST = "127.0.0.1"
 CONTROL_PORT = 18765
+DEFAULT_PROXY_PORT = 8888
 
 
 def select_port() -> int:
@@ -43,17 +45,24 @@ def select_port() -> int:
         sock.close()
 
 
-def cleanup(proxy_port: int = 8888) -> None:
-    """删除运行时文件并尽力停止代理。"""
+def cleanup(proxy_port: int | None = None) -> None:
+    """删除本进程写入的 runtime.json，并停止它记录的代理端口。
+
+    runtime.json 属于另一个存活的控制服务时不做任何事，避免误杀它的代理。
+    """
+    info = read_runtime()
+    if info is None or info.pid != os.getpid():
+        return
+    port = info.proxy_port if proxy_port is None else proxy_port
     clear_runtime()
     try:
-        proxy_stop(port=proxy_port)
+        proxy_stop(port=port)
     except Exception:
         pass
 
 
 def register_shutdown_handlers(
-    *, proxy_port: int, shutdown: Callable[[], None] | None = None
+    *, proxy_port: int | None = None, shutdown: Callable[[], None] | None = None
 ) -> None:
     """在解释器退出和终止信号时执行清理。"""
     finalizer = shutdown or (lambda: cleanup(proxy_port))
@@ -86,12 +95,12 @@ def main() -> None:
             token=token,
             traffic_db=str(traffic_db),
             mock_db=str(mock_db),
-            proxy_port=8888,
+            proxy_port=DEFAULT_PROXY_PORT,
             capture_target=capture_target,
             started_at=datetime.now(UTC).isoformat(),
         )
     )
-    register_shutdown_handlers(proxy_port=8888)
+    register_shutdown_handlers()
     try:
         uvicorn.run(create_app(token), host=CONTROL_HOST, port=port)
     finally:

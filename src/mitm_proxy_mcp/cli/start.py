@@ -10,14 +10,16 @@ MITM Proxy 启动脚本
 """
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import time
-import shutil
 from pathlib import Path
 
 from loguru import logger
+
+from ..control.runtime import is_pid_alive, read_runtime
 
 # 配置 loguru
 logger.remove()
@@ -211,6 +213,17 @@ def disable_mac_proxy() -> bool:
         return False
 
 
+def resolve_db_paths() -> tuple[Path, Path]:
+    """返回 (traffic_db, mock_db)，优先复用运行中控制服务的数据库路径。"""
+    from ..core.mock_store import MockStore
+    from ..core.sqlite_store import SQLiteTrafficStore
+
+    info = read_runtime()
+    if info is not None and is_pid_alive(info.pid):
+        return Path(info.traffic_db), Path(info.mock_db)
+    return SQLiteTrafficStore.get_default_path(), MockStore.get_default_path()
+
+
 def check_port_available(port: int) -> bool:
     """检查端口是否可用"""
     try:
@@ -362,10 +375,8 @@ def main():
     try:
         # 直接使用 mitmdump，流量会保存到 SQLite
         from ..core.sqlite_store import SQLiteTrafficStore
-        from ..core.mock_store import MockStore
 
-        db_path = SQLiteTrafficStore.get_default_path()
-        mock_db_path = MockStore.get_default_path()
+        db_path, mock_db_path = resolve_db_paths()
         store = SQLiteTrafficStore(db_path)
         store.clear()
 

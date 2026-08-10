@@ -12,10 +12,23 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .bridge import ControlClient, resolve_backend
 from .control.dispatch import invoke_tool
 
 # 创建 MCP 服务器
 server = Server("mitmproxy-mcp")
+_backend: ControlClient | None = None
+_backend_resolved = False
+
+
+async def _ensure_backend() -> ControlClient | None:
+    """解析可用的控制服务后端。"""
+    global _backend, _backend_resolved
+
+    if _backend is None and not _backend_resolved:
+        _backend = await resolve_backend()
+        _backend_resolved = True
+    return _backend
 
 
 # ============== 工具定义 ==============
@@ -579,7 +592,11 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """处理工具调用"""
-    result = await invoke_tool(name, arguments)
+    backend = await _ensure_backend()
+    if backend is not None:
+        result = await backend.call_tool(name, arguments)
+    else:
+        result = await invoke_tool(name, arguments)
 
     # 格式化输出
     import json

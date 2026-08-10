@@ -17,12 +17,26 @@ async def test_list_contains_all_current_tools():
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool_raises_key_error():
-    """未知工具名显式报错。"""
-    from mitm_proxy_mcp.control.dispatch import invoke_tool
+async def test_unknown_tool_raises_unknown_tool_error():
+    """未知工具名抛出专用异常。"""
+    from mitm_proxy_mcp.control.dispatch import UnknownToolError, invoke_tool
 
-    with pytest.raises(KeyError):
+    with pytest.raises(UnknownToolError) as error:
         await invoke_tool("no_such_tool", {})
+
+    assert error.value.name == "no_such_tool"
+
+
+@pytest.mark.asyncio
+async def test_missing_required_argument_is_not_unknown_tool():
+    """缺少必填参数抛 KeyError，不能被误判成未知工具。"""
+    from mitm_proxy_mcp.control.dispatch import UnknownToolError, invoke_tool
+
+    with pytest.raises(KeyError) as error:
+        await invoke_tool("traffic_get_detail", {})
+
+    assert not isinstance(error.value, UnknownToolError)
+    assert error.value.args[0] == "request_id"
 
 
 @pytest.mark.asyncio

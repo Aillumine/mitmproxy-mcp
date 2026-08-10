@@ -8,6 +8,14 @@ from typing import Any
 Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+class UnknownToolError(LookupError):
+    """请求的工具名不在分发表中。"""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"unknown tool: {name}")
+        self.name = name
+
+
 async def _call_sync(
     module_name: str, function_name: str, *args: Any, **kwargs: Any
 ) -> dict[str, Any]:
@@ -328,5 +336,11 @@ def list_tool_names() -> list[str]:
 
 
 async def invoke_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """调用指定工具；未知工具名会抛出 KeyError。"""
-    return await TOOL_HANDLERS[name](arguments)
+    """调用指定工具；未知工具名会抛出 UnknownToolError。
+
+    handler 内部因缺少必填参数抛出的 KeyError 不会被吞掉，以免与未知工具混淆。
+    """
+    handler = TOOL_HANDLERS.get(name)
+    if handler is None:
+        raise UnknownToolError(name)
+    return await handler(arguments)

@@ -13,10 +13,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from mitm_proxy_mcp.control.capture_context import get_capture_target
 from mitm_proxy_mcp.control.dispatch import (
-    invoke_tool as default_invoke_tool,
+    UnknownToolError,
+    list_tool_names,
 )
 from mitm_proxy_mcp.control.dispatch import (
-    list_tool_names,
+    invoke_tool as default_invoke_tool,
 )
 from mitm_proxy_mcp.control.runtime import (
     RuntimeInfo,
@@ -31,6 +32,13 @@ RuntimeReader = Callable[[], RuntimeInfo | None]
 ToolLister = Callable[[], list[str]]
 ProxyStatus = Callable[[], dict[str, Any]]
 CaptureTargetGetter = Callable[[], str]
+
+
+def _error_message(error: Exception) -> str:
+    """把工具异常转成可读的错误信息。"""
+    if isinstance(error, KeyError):
+        return f"missing required argument: {error.args[0]}"
+    return str(error) or error.__class__.__name__
 
 
 def create_app(
@@ -79,11 +87,13 @@ def create_app(
     @app.get("/v1/runtime", dependencies=[Depends(require_token)])
     def runtime() -> dict[str, Any]:
         info = read_runtime()
-        if info is not None:
-            data = asdict(info)
-            data.pop("token", None)
-            return data
-        return {"capture_target": get_capture_target()}
+        if info is None:
+            return {"capture_target": get_capture_target()}
+        data = asdict(info)
+        data.pop("token", None)
+        # 进程内的抓包目标才是权威值，runtime.json 可能落后于最近一次切换。
+        data["capture_target"] = get_capture_target()
+        return data
 
     @app.get("/v1/tools", dependencies=[Depends(require_token)])
     def tools() -> dict[str, list[str]]:
@@ -106,7 +116,7 @@ def create_app(
     ) -> dict[str, Any] | JSONResponse:
         try:
             return await invoke_tool(tool_name, arguments)
-        except KeyError as error:
+        except UnknownToolError as error:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"unknown tool: {tool_name}",
@@ -114,7 +124,7 @@ def create_app(
         except Exception as error:
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"success": False, "message": str(error)},
+                content={"success": False, "message": _error_message(error)},
             )
 
     return app

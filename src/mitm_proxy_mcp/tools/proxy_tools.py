@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..android.cert_injector import CertHelper
+from ..control.capture_context import resolve_setup_proxy
 from ..core.sqlite_store import SQLiteTrafficStore
 
 # PID 文件路径（用于跟踪代理进程）
@@ -114,14 +115,28 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False) -> dict[str, Any]:
     Returns:
         包含启动状态的字典
     """
+    setup_proxy, setup_proxy_block_reason = resolve_setup_proxy(setup_proxy)
+
+    def with_setup_proxy_guard(result: dict[str, Any]) -> dict[str, Any]:
+        result["setup_proxy"] = setup_proxy
+        if setup_proxy_block_reason:
+            message = result.get("message", "")
+            result["message"] = (
+                f"{message}\n⚠️  {setup_proxy_block_reason}"
+                if message
+                else setup_proxy_block_reason
+            )
+            result["setup_proxy_blocked"] = True
+        return result
+
     # 检查是否已经在运行
     existing_pid = _read_pid() or _find_proxy_process_by_port(port)
     if existing_pid:
-        return {
+        return with_setup_proxy_guard({
             "success": False,
             "message": f"代理已在运行（PID: {existing_pid}）。请先使用 proxy_stop 停止代理。",
             "pid": existing_pid,
-        }
+        })
 
     # 检查端口是否被占用
     try:
@@ -135,15 +150,15 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False) -> dict[str, Any]:
             # 端口被占用，尝试通过端口查找进程
             pid = _find_proxy_process_by_port(port)
             if pid:
-                return {
+                return with_setup_proxy_guard({
                     "success": False,
                     "message": f"端口 {port} 已被占用（PID: {pid}）。请先使用 proxy_stop 停止代理。",
                     "pid": pid,
-                }
-            return {
+                })
+            return with_setup_proxy_guard({
                 "success": False,
                 "message": f"端口 {port} 已被占用，但无法确定进程。请手动检查。",
-            }
+            })
     except Exception:
         pass
 
@@ -152,10 +167,10 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False) -> dict[str, Any]:
 
     uv_cmd = shutil.which("uv")
     if not uv_cmd:
-        return {
+        return with_setup_proxy_guard({
             "success": False,
             "message": "未找到 uv 命令。请确保已安装 uv: https://github.com/astral-sh/uv",
-        }
+        })
 
     # 获取项目根目录（可选）
     project_root = _get_project_root()
@@ -211,11 +226,11 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False) -> dict[str, Any]:
                 except Exception:
                     pass
 
-                return {
+                return with_setup_proxy_guard({
                     "success": False,
                     "message": f"代理启动失败（退出码: {process.returncode}）。"
                     + (f"\n错误信息: {error_msg[:500]}" if error_msg else ""),
-                }
+                })
 
             # 检查端口是否开始监听
             try:
@@ -246,19 +261,19 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False) -> dict[str, Any]:
             result = sock.connect_ex(("127.0.0.1", port))
             sock.close()
             if result != 0:
-                return {
+                return with_setup_proxy_guard({
                     "success": False,
                     "message": f"代理进程已启动（PID: {process.pid}），但端口 {port} 未开始监听。"
                     + "请检查代理日志或手动在终端运行 'uv run mitmproxy-start' 查看错误。",
                     "pid": process.pid,
-                }
+                })
         except Exception:
             pass
 
         # 保存 PID
         _save_pid(process.pid)
 
-        return {
+        return with_setup_proxy_guard({
             "success": True,
             "message": f"代理已启动（PID: {process.pid}, 端口: {port}）。"
             + (
@@ -269,14 +284,13 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False) -> dict[str, Any]:
             ),
             "pid": process.pid,
             "port": port,
-            "setup_proxy": setup_proxy,
             "certificate_hint": "Mac 浏览器访问 HTTPS 网站需要安装 CA 证书。访问 http://mitm.it 下载。",
-        }
+        })
     except Exception as e:
-        return {
+        return with_setup_proxy_guard({
             "success": False,
             "message": f"启动代理时出错: {e}",
-        }
+        })
 
 
 def proxy_status() -> dict[str, Any]:

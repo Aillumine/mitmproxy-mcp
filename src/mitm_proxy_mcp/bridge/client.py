@@ -32,6 +32,8 @@ def _error_payload(response: httpx.Response) -> dict[str, Any] | None:
     工具在控制服务里执行失败是业务结果而不是链路故障，必须原样带回，
     否则调用方会误判服务已死而在本地重跑一次同样的工具。
     """
+    if response.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
+        return None
     try:
         body = response.json()
     except ValueError:
@@ -40,10 +42,7 @@ def _error_payload(response: httpx.Response) -> dict[str, Any] | None:
         return None
     if "success" in body:
         return body
-    detail = body.get("detail")
-    if detail is None:
-        return None
-    return {"success": False, "message": str(detail)}
+    return None
 
 
 @dataclass(frozen=True)

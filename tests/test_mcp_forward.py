@@ -78,6 +78,49 @@ async def test_dead_backend_falls_back_and_is_reresolved(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_backend_falls_back_and_is_reresolved(monkeypatch):
+    """控制服务令牌过期时，本次调用回退本地分发并清空缓存的后端。"""
+    import mitm_proxy_mcp.bridge.client as client_module
+    from mitm_proxy_mcp import server
+    from mitm_proxy_mcp.bridge.client import ControlClient
+
+    class UnauthorizedClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                status_code=401,
+                json={"detail": "invalid bearer token"},
+                request=request,
+            )
+
+    monkeypatch.setattr(client_module.httpx, "AsyncClient", UnauthorizedClient)
+    monkeypatch.setattr(
+        server,
+        "_backend",
+        ControlClient(base_url="http://127.0.0.1:9999", token="expired-token"),
+    )
+    monkeypatch.setattr(server, "_backend_resolved", True)
+    invoke = AsyncMock(return_value={"ok": True, "local": True})
+    monkeypatch.setattr(server, "invoke_tool", invoke)
+
+    result = await server.dispatch_tool("proxy_status", {})
+
+    assert result == {"ok": True, "local": True}
+    invoke.assert_awaited_once_with("proxy_status", {})
+    assert server._backend is None
+    assert server._backend_resolved is False
+
+
+@pytest.mark.asyncio
 async def test_backend_is_reresolved_on_next_call_after_failure(monkeypatch):
     """后端失效后，下一次调用会重新解析控制服务。"""
     from mitm_proxy_mcp import server

@@ -77,7 +77,8 @@ class TestTrafficTools:
 
                 assert result["success"] is True
                 assert result["requests"] == []
-                assert result["total"] == 0
+                assert result["returned"] == 0
+                assert result["store_size"] == 0
 
     def test_traffic_list_with_records(self):
         """测试有流量时的列表"""
@@ -100,7 +101,8 @@ class TestTrafficTools:
                 result = traffic_tools.traffic_list(limit=10)
 
                 assert result["success"] is True
-                assert result["total"] == 1
+                assert result["returned"] == 1
+                assert result["store_size"] == 1
                 assert result["requests"][0]["id"] == "req-1"
 
     def test_traffic_list_with_filters(self):
@@ -139,11 +141,11 @@ class TestTrafficTools:
                 # 按域名筛选
                 result = traffic_tools.traffic_list(filter_domain="%.example.com")
                 assert result["success"] is True
-                assert result["total"] == 5
+                assert result["returned"] == 5
 
                 # 按状态码筛选
                 result = traffic_tools.traffic_list(filter_status="404")
-                assert result["total"] == 1
+                assert result["returned"] == 1
 
     def test_traffic_get_detail_not_found(self):
         """测试获取不存在的请求详情"""
@@ -213,14 +215,17 @@ class TestTrafficTools:
     def test_proxy_status_not_running(self):
         """测试代理未运行时的状态"""
         with patch.object(SQLiteTrafficStore, 'exists', return_value=False):
-            result = traffic_tools.proxy_status()
+            result = proxy_tools.proxy_status()
             assert result["running"] is False
 
     def test_proxy_status_running(self):
         """测试代理运行时的状态"""
         with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
-                result = traffic_tools.proxy_status()
+            with patch.object(proxy_tools, 'SQLiteTrafficStore') as MockStore:
+                MockStore.exists.return_value = True
+                MockStore.return_value = self.store
+                MockStore.get_default_path.return_value = self.store.db_path
+                result = proxy_tools.proxy_status()
                 assert result["running"] is True
 
     def test_traffic_search_in_response_body(self):

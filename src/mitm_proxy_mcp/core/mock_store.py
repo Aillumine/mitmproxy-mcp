@@ -6,6 +6,7 @@ Mock 规则存储
 """
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -219,7 +220,8 @@ class MockStore:
 
     @classmethod
     def get_default_path(cls) -> Path:
-        return DEFAULT_MOCK_DB_PATH
+        env = os.environ.get("MITMPROXY_MOCK_DB_PATH")
+        return Path(env) if env else DEFAULT_MOCK_DB_PATH
 
     @staticmethod
     def match_url(url: str, pattern: str, match_type: str) -> bool:

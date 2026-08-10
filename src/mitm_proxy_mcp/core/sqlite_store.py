@@ -6,6 +6,7 @@ SQLite 流量存储
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from threading import Lock
@@ -524,9 +525,12 @@ class SQLiteTrafficStore:
     @classmethod
     def get_default_path(cls) -> Path:
         """获取默认数据库路径"""
-        return DEFAULT_DB_PATH
+        env = os.environ.get("MITMPROXY_DB_PATH")
+        return Path(env) if env else DEFAULT_DB_PATH
 
     @classmethod
-    def exists(cls, db_path: Path | str = DEFAULT_DB_PATH) -> bool:
+    def exists(cls, db_path: Path | str | None = None) -> bool:
         """检查数据库文件是否存在"""
+        if db_path is None:
+            db_path = cls.get_default_path()
         return Path(db_path).exists()

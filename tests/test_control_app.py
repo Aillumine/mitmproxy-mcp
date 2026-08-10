@@ -46,6 +46,17 @@ def test_health_requires_valid_bearer_token():
     }
 
 
+def test_docs_endpoints_are_disabled():
+    """控制服务不暴露未经认证的 API 文档。"""
+    from mitm_proxy_mcp.control.app import create_app
+
+    client = TestClient(create_app(token="secret"))
+
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
 def test_runtime_omits_bearer_token():
     """运行时端点绝不暴露控制服务 token。"""
     from mitm_proxy_mcp.control.app import create_app
@@ -106,6 +117,30 @@ def test_unknown_tool_returns_404():
     )
 
     assert response.status_code == 404
+
+
+def test_tool_failure_returns_standard_error_body():
+    """工具调用异常返回控制服务约定的错误体。"""
+    from mitm_proxy_mcp.control.app import create_app
+
+    client = TestClient(
+        create_app(
+            token="secret",
+            invoke_tool=AsyncMock(side_effect=RuntimeError("database unavailable")),
+        )
+    )
+
+    response = client.post(
+        "/v1/tools/traffic_list",
+        headers={"Authorization": "Bearer secret"},
+        json={},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "success": False,
+        "message": "database unavailable",
+    }
 
 
 def test_events_is_not_implemented():

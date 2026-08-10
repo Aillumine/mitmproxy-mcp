@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from mitm_proxy_mcp.control.capture_context import get_capture_target
@@ -58,7 +59,13 @@ def create_app(
                 detail="invalid bearer token",
             )
 
-    app = FastAPI(title="mitmproxy-control", version="1.0.0")
+    app = FastAPI(
+        title="mitmproxy-control",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     @app.get("/v1/health", dependencies=[Depends(require_token)])
     def health() -> dict[str, Any]:
@@ -89,10 +96,14 @@ def create_app(
             detail="events are not implemented",
         )
 
-    @app.post("/v1/tools/{tool_name}", dependencies=[Depends(require_token)])
+    @app.post(
+        "/v1/tools/{tool_name}",
+        dependencies=[Depends(require_token)],
+        response_model=None,
+    )
     async def call_tool(
         tool_name: str, arguments: dict[str, Any] = Body(default_factory=dict)
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | JSONResponse:
         try:
             return await invoke_tool(tool_name, arguments)
         except KeyError as error:
@@ -101,9 +112,9 @@ def create_app(
                 detail=f"unknown tool: {tool_name}",
             ) from error
         except Exception as error:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(error),
-            ) from error
+                content={"success": False, "message": str(error)},
+            )
 
     return app

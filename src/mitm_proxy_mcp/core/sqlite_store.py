@@ -27,7 +27,7 @@ class SQLiteTrafficStore:
     - 线程安全
     """
 
-    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH, max_size: int = 2000):
+    def __init__(self, db_path: Path | str | None = None, max_size: int = 2000):
         """
         初始化 SQLite 存储
 
@@ -35,7 +35,7 @@ class SQLiteTrafficStore:
             db_path: 数据库文件路径
             max_size: 最大存储条数
         """
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path) if db_path is not None else self.get_default_path()
         self.max_size = max_size
         self._lock = Lock()
         self._init_db()

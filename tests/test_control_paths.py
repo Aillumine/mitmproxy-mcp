@@ -26,3 +26,11 @@ def test_store_default_path_fallback_tmp(monkeypatch):
     monkeypatch.delenv("MITMPROXY_MOCK_DB_PATH", raising=False)
     assert SQLiteTrafficStore.get_default_path() == Path("/tmp/mitmproxy-traffic.db")
     assert MockStore.get_default_path() == Path("/tmp/mitmproxy-mock.db")
+
+def test_store_init_uses_env_default(monkeypatch, tmp_path):
+    traffic = tmp_path / "t.db"
+    mock = tmp_path / "m.db"
+    monkeypatch.setenv("MITMPROXY_DB_PATH", str(traffic))
+    monkeypatch.setenv("MITMPROXY_MOCK_DB_PATH", str(mock))
+    assert SQLiteTrafficStore().db_path == traffic
+    assert MockStore().db_path == mock

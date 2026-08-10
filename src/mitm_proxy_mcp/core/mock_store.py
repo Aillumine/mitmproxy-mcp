@@ -65,8 +65,8 @@ class MockRule:
 class MockStore:
     """Mock 规则 SQLite 存储"""
 
-    def __init__(self, db_path: Path | str = DEFAULT_MOCK_DB_PATH):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: Path | str | None = None):
+        self.db_path = Path(db_path) if db_path is not None else self.get_default_path()
         self._lock = Lock()
         self._init_db()
 

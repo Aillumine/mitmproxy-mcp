@@ -8,6 +8,7 @@ from typing import Any
 
 from ..android.adb_client import ADBClient, ADBError
 from ..android.cert_injector import CertHelper
+from ..control.capture_context import set_capture_target
 
 # 全局 ADB 客户端实例
 _adb_client: ADBClient | None = None
@@ -194,6 +195,7 @@ async def android_setup_proxy(
                 "message": f"Failed to set proxy: {output}",
             }
 
+        set_capture_target("device")
         return {
             "success": True,
             "message": f"Proxy set to {proxy_host}:{proxy_port}",
@@ -616,6 +618,7 @@ async def android_reverse_proxy(serial: str, port: int = 8888) -> dict[str, Any]
         if exit_code != 0:
             return {"success": False, "message": f"设置代理失败: {output.strip()}"}
 
+        set_capture_target("device")
         return {
             "success": True,
             "proxy": f"127.0.0.1:{port}",

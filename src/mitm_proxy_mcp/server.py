@@ -122,6 +122,10 @@ async def list_tools() -> list[Tool]:
                         "type": "number",
                         "description": "结束时间（Unix 时间戳），筛选该时间之前的请求",
                     },
+                    "after_id": {
+                        "type": "string",
+                        "description": "仅返回此请求之后捕获的流量；请求不存在时返回未按此条件过滤的列表",
+                    },
                 },
             },
         ),

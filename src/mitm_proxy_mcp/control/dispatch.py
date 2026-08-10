@@ -59,6 +59,7 @@ async def _call_traffic_list(arguments: dict[str, Any]) -> dict[str, Any]:
         filter_url=arguments.get("filter_url"),
         start_time=arguments.get("start_time"),
         end_time=arguments.get("end_time"),
+        after_id=arguments.get("after_id"),
     )
 
 

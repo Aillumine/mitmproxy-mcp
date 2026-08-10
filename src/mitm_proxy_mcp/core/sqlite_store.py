@@ -143,6 +143,7 @@ class SQLiteTrafficStore:
         filter_url: str | None = None,
         start_time: float | None = None,
         end_time: float | None = None,
+        after_id: str | None = None,
     ) -> list[TrafficRecord]:
         """
         查询流量记录
@@ -154,6 +155,7 @@ class SQLiteTrafficStore:
             filter_type: 按资源类型筛选
             filter_status: 按状态码筛选
             filter_url: 按 URL 正则匹配
+            after_id: 仅返回该记录时间戳之后的记录；不存在时忽略
 
         Returns:
             匹配的流量记录列表，按时间倒序
@@ -193,10 +195,17 @@ class SQLiteTrafficStore:
             conditions.append("timestamp <= ?")
             params.append(end_time)
 
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
-        params.extend([limit, offset])
-
         with self._get_conn() as conn:
+            if after_id is not None:
+                cursor = conn.execute(
+                    "SELECT timestamp FROM traffic WHERE id = ?", (after_id,)
+                ).fetchone()
+                if cursor is not None:
+                    conditions.append("timestamp > ?")
+                    params.append(cursor["timestamp"])
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            params.extend([limit, offset])
             rows = conn.execute(f"""
                 SELECT * FROM traffic
                 WHERE {where_clause}

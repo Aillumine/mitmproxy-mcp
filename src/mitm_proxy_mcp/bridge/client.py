@@ -42,7 +42,10 @@ def _error_payload(response: httpx.Response) -> dict[str, Any] | None:
         return None
     if "success" in body:
         return body
-    return None
+    detail = body.get("detail")
+    if detail is None:
+        return None
+    return {"success": False, "message": str(detail)}
 
 
 @dataclass(frozen=True)

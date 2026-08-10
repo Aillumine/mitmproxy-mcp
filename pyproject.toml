@@ -7,6 +7,9 @@ dependencies = [
     "mitmproxy>=10.0.0",
     "mcp>=1.0.0",
     "loguru>=0.7.0",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.40.0",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +23,7 @@ dev = [
 [project.scripts]
 mitmproxy-mcp = "mitm_proxy_mcp.server:main"
 mitmproxy-start = "mitm_proxy_mcp.cli.start:main"
+mitmproxy-control = "mitm_proxy_mcp.control.main:main"
 
 [build-system]
 requires = ["hatchling"]

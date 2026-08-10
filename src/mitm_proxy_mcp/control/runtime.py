@@ -8,7 +8,10 @@ import secrets
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from mitm_proxy_mcp.control.paths import runtime_json_path
+from mitm_proxy_mcp.control.paths import MITMSCOPE_DIR_MODE, runtime_json_path
+
+# runtime.json 保存控制服务 Bearer token，只允许当前用户读写。
+RUNTIME_FILE_MODE = 0o600
 
 
 @dataclass
@@ -34,13 +37,18 @@ def _resolve_path(path: Path | None) -> Path:
 
 
 def write_runtime(info: RuntimeInfo, path: Path | None = None) -> Path:
-    """写入 runtime.json 并返回实际路径。"""
+    """以 0600 权限写入 runtime.json 并返回实际路径。"""
     target = _resolve_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(asdict(info), indent=2) + "\n",
-        encoding="utf-8",
+    target.parent.mkdir(parents=True, exist_ok=True, mode=MITMSCOPE_DIR_MODE)
+    payload = json.dumps(asdict(info), indent=2) + "\n"
+    # 用 os.open 创建，避免 token 在 chmod 之前存在可被他人读取的时间窗口。
+    descriptor = os.open(
+        target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, RUNTIME_FILE_MODE
     )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    # 文件已存在时 os.open 不会应用 mode，需要显式收紧权限。
+    target.chmod(RUNTIME_FILE_MODE)
     return target
 
 
@@ -51,6 +59,17 @@ def read_runtime(path: Path | None = None) -> RuntimeInfo | None:
         return None
     data = json.loads(target.read_text(encoding="utf-8"))
     return RuntimeInfo(**data)
+
+
+def update_capture_target(target: str, path: Path | None = None) -> bool:
+    """把 capture_target 写回 runtime.json；文件不存在时返回 False。"""
+    info = read_runtime(path)
+    if info is None:
+        return False
+    if info.capture_target != target:
+        info.capture_target = target
+        write_runtime(info, path)
+    return True
 
 
 def clear_runtime(path: Path | None = None) -> None:

@@ -12,7 +12,9 @@ from mitm_proxy_mcp.tools import android_tools
 
 
 @pytest.fixture(autouse=True)
-def reset_capture_target() -> None:
+def reset_capture_target(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # 隔离 HOME，避免用例把真实 ~/.mitmscope/runtime.json 改掉。
+    monkeypatch.setenv("HOME", str(tmp_path))
     set_capture_target("mac")
     yield
     set_capture_target("mac")

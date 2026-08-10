@@ -5,10 +5,13 @@ from mitm_proxy_mcp.control.capture_context import (
     resolve_setup_proxy,
     set_capture_target,
 )
+from mitm_proxy_mcp.control.runtime import RuntimeInfo, read_runtime, write_runtime
 
 
 @pytest.fixture(autouse=True)
-def reset_capture_target():
+def reset_capture_target(monkeypatch, tmp_path):
+    # 隔离 HOME，避免用例把真实 ~/.mitmscope/runtime.json 改掉。
+    monkeypatch.setenv("HOME", str(tmp_path))
     set_capture_target("mac")
     yield
     set_capture_target("mac")
@@ -17,6 +20,42 @@ def reset_capture_target():
 def test_default_mac():
     set_capture_target("mac")
     assert get_capture_target() == "mac"
+
+
+def test_set_capture_target_persists_to_runtime_json(tmp_path):
+    """切换抓包目标会同步写回 runtime.json。"""
+    write_runtime(
+        RuntimeInfo(
+            version=1,
+            pid=1234,
+            base_url="http://127.0.0.1:18765",
+            token="secret",
+            traffic_db=str(tmp_path / "traffic.db"),
+            mock_db=str(tmp_path / "mock.db"),
+            proxy_port=8888,
+            capture_target="mac",
+            started_at="2026-08-06T00:00:00Z",
+        )
+    )
+
+    set_capture_target("device")
+
+    loaded = read_runtime()
+    assert loaded is not None
+    assert loaded.capture_target == "device"
+
+
+def test_set_capture_target_survives_broken_runtime_json():
+    """runtime.json 损坏时内存状态仍然更新，不抛异常。"""
+    from mitm_proxy_mcp.control.paths import runtime_json_path
+
+    target = runtime_json_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("not json", encoding="utf-8")
+
+    set_capture_target("device")
+
+    assert get_capture_target() == "device"
 
 
 def test_device_forbids_setup_proxy():

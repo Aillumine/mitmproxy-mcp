@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+# 目录里存放 runtime.json（含 Bearer token）与抓包数据库，仅本用户可访问。
+MITMSCOPE_DIR_MODE = 0o700
+
 
 def mitmscope_dir() -> Path:
     """返回 ~/.mitmscope 目录路径。"""
@@ -9,9 +12,10 @@ def mitmscope_dir() -> Path:
 
 
 def ensure_mitmscope_dir() -> Path:
-    """确保 ~/.mitmscope 存在并返回其路径。"""
+    """确保 ~/.mitmscope 存在、权限为 0700，并返回其路径。"""
     path = mitmscope_dir()
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True, mode=MITMSCOPE_DIR_MODE)
+    path.chmod(MITMSCOPE_DIR_MODE)
     return path
 
 

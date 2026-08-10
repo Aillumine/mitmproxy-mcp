@@ -219,11 +219,11 @@ Plan 2 **不做** REST 别名（如 `/v1/proxy/start`）；需要时留给 Plan 
 
 ## 11. 成功标准
 
-- [ ] `uv run mitmproxy-control` 可启动，写出合法 `runtime.json`，`GET /v1/health` 返回 ok
-- [ ] 带正确 token 可 `POST /v1/tools/proxy_status` 等；错 token → 401
-- [ ] MCP 在控制服务健康时走转发；停止控制服务后可 fallback
-- [ ] `capture_target=device` 时无法开启 Mac 系统代理
-- [ ] Plan 3 可用同一 Base URL + Bearer token 对接（无需再改契约核心）
+- [x] `uv run mitmproxy-control` 可启动，写出合法 `runtime.json`，`GET /v1/health` 返回 ok
+- [x] 带正确 token 可 `POST /v1/tools/proxy_status` 等；错 token → 401
+- [x] MCP 在控制服务健康时走转发；停止控制服务后可 fallback
+- [x] `capture_target=device` 时无法开启 Mac 系统代理
+- [x] Plan 3 可用同一 Base URL + Bearer token 对接（无需再改契约核心）
 
 ---
 

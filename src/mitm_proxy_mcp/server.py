@@ -6,8 +6,11 @@ MCP 服务入口
 """
 
 import asyncio
+import json
 from typing import Any
 
+import httpx
+from loguru import logger
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -19,16 +22,52 @@ from .control.dispatch import invoke_tool
 server = Server("mitmproxy-mcp")
 _backend: ControlClient | None = None
 _backend_resolved = False
+_backend_lock: asyncio.Lock | None = None
+_backend_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_backend_lock() -> asyncio.Lock:
+    """返回绑定到当前事件循环的解析锁。"""
+    global _backend_lock, _backend_lock_loop
+
+    loop = asyncio.get_running_loop()
+    if _backend_lock is None or _backend_lock_loop is not loop:
+        _backend_lock = asyncio.Lock()
+        _backend_lock_loop = loop
+    return _backend_lock
+
+
+def _reset_backend() -> None:
+    """丢弃已失效的后端，使下一次调用重新解析。"""
+    global _backend, _backend_resolved
+
+    _backend = None
+    _backend_resolved = False
 
 
 async def _ensure_backend() -> ControlClient | None:
-    """解析可用的控制服务后端。"""
+    """解析可用的控制服务后端；并发首次调用不会重复拉起服务。"""
     global _backend, _backend_resolved
 
-    if _backend is None and not _backend_resolved:
-        _backend = await resolve_backend()
-        _backend_resolved = True
+    if _backend is not None or _backend_resolved:
+        return _backend
+    async with _get_backend_lock():
+        if _backend is None and not _backend_resolved:
+            _backend = await resolve_backend()
+            _backend_resolved = True
     return _backend
+
+
+async def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """优先转发到控制服务；服务不可用时回退到本地分发。"""
+    backend = await _ensure_backend()
+    if backend is not None:
+        try:
+            return await backend.call_tool(name, arguments)
+        except httpx.HTTPError as error:
+            logger.warning(f"控制服务调用失败，本次回退到本地分发: {error}")
+            _reset_backend()
+    return await invoke_tool(name, arguments)
 
 
 # ============== 工具定义 ==============
@@ -596,15 +635,9 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """处理工具调用"""
-    backend = await _ensure_backend()
-    if backend is not None:
-        result = await backend.call_tool(name, arguments)
-    else:
-        result = await invoke_tool(name, arguments)
-
-    # 格式化输出
-    import json
-    return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+    result = await dispatch_tool(name, arguments)
+    text = json.dumps(result, indent=2, ensure_ascii=False)
+    return [TextContent(type="text", text=text)]
 
 
 async def run_server():

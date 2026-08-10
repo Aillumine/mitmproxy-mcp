@@ -15,11 +15,16 @@ alwaysApply: true
 - 禁止通过修改 Model / Repository / Provider 等源代码来实现 mock
 - 唯一的 mock 途径：调用 `mock_add` 等 MCP 工具
 
+## 控制服务与数据目录
+
+MCP 启动时会自动探测或拉起本地控制服务（`mitmproxy-control`）。控制服务模式下，流量与 Mock 数据存放在 `~/.mitmscope/`（`traffic.db`、`mock.db`、`runtime.json`）。无控制服务时 fallback 到旧行为（默认 `/tmp/*.db`）。
+
 ## 可用 MCP 工具（通过 mitmproxy MCP 服务提供）
 
 ### 代理管理
 - `proxy_start` — 启动代理（参数: port=8888, setup_proxy=false）
-  - `setup_proxy=true` 会自动设置 Mac Wi-Fi 系统代理
+  - 默认**不**设置 Mac 系统代理；仅用户明确要求「也抓电脑 / 开系统代理」时才传 `setup_proxy=true`
+  - 真机抓包（`capture_target=device`）时**强制禁止** Mac 系统代理，即使传入 `true` 也会被否决
 - `proxy_stop` — 停止代理（参数: port=8888）
 - `proxy_status` — 查看代理状态
 
@@ -45,7 +50,7 @@ alwaysApply: true
 ## 典型工作流
 
 ### 抓包
-1. 用户说"开始抓包" → 调用 `proxy_start(setup_proxy=true)`
+1. 用户说"开始抓包" → 调用 `proxy_start()`（默认 `setup_proxy=false`）；真机用 `android_setup_proxy` / `android_reverse_proxy`
 2. 用户说"抓下 XX 接口" → 先 `proxy_status` 确认代理在运行，然后等用户操作，再用 `traffic_list` + `traffic_search` 查找
 3. 用户说"看下数据" → 用 `traffic_read_body` 读取响应体
 4. 用户说"停止抓包" → 调用 `proxy_stop`

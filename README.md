@@ -11,18 +11,51 @@
 ## 架构
 
 ```
-┌─────────────────┐     SQLite      ┌─────────────────┐
-│  代理服务        │ ─────────────→  │  MCP 服务        │
-│  (终端手动启动)   │   流量数据共享   │  (Cursor 调用)   │
-│  mitmdump       │                 │  查询/搜索/分析   │
-└─────────────────┘                 └─────────────────┘
-        ↑
-        │ HTTP/HTTPS
-        │
-   ┌─────────────┐
-   │ iOS 模拟器   │
-   └─────────────┘
+┌─────────────┐  stdio   ┌──────────────────┐
+│ Cursor/IDE  │ ◄──────► │ mitmproxy-mcp    │
+└─────────────┘          │ (探测/转发/fallback)│
+                         └────────┬─────────┘
+                                  │ HTTP Bearer
+                                  ▼
+                         ┌──────────────────┐     spawn
+                         │ mitmproxy-control│ ──────────► mitmdump
+                         │ ~/.mitmscope/*   │
+                         └──────────────────┘
+                                  ▲
+                                  │ HTTP/HTTPS
+                         ┌────────┴─────────┐
+                         │ 模拟器 / 真机 / Mac │
+                         └──────────────────┘
 ```
+
+- **MCP 服务**（`mitmproxy-mcp`）：Cursor 通过 stdio 调用；启动时自动探测控制服务，健康则 HTTP 转发，否则 fallback 直调 `tools/*`
+- **控制服务**（`mitmproxy-control`）：本地 FastAPI 服务，管理代理进程与 `~/.mitmscope/` 下的流量/Mock 数据
+- **代理进程**（`mitmproxy-start` / mitmdump）：实际抓包；控制服务模式下由 `proxy_start` 拉起
+
+**Fallback：** 无健康控制服务时，MCP 行为与旧版一致（直调 `tools/*`，默认 `/tmp/*.db`）。
+
+### 数据目录 `~/.mitmscope/`
+
+控制服务模式下，流量与 Mock 数据统一存放在用户目录：
+
+| 文件 | 说明 |
+|------|------|
+| `traffic.db` | 流量 SQLite 库 |
+| `mock.db` | Mock 规则库 |
+| `runtime.json` | 控制服务运行时信息（含 Bearer token、端口、抓包目标） |
+| `control.log` | 控制服务日志 |
+
+> 不自动迁移 `/tmp` 旧库；需要历史数据请手动复制或重新抓包。
+
+### 真机抓包：禁止 Mac 系统代理
+
+真机（Android / iOS）抓包时，**不会也不应**设置 Mac Wi-Fi 系统代理，避免污染本机网络。推荐路径：mitm 只监听 + `android_reverse_proxy` / 设备 Wi-Fi 指向 Mac IP。
+
+| 抓包目标 | Mac 系统代理（`setup_proxy`） |
+|----------|-------------------------------|
+| `device`（真机） | **强制禁止** |
+| `simulator`（模拟器） | 默认 `false`；仅用户显式要求才允许 |
+| `mac`（仅本机） | 默认 `false`；仅用户显式要求才允许 |
 
 ## 快速开始
 
@@ -122,40 +155,52 @@ bash install-skill.sh
 
 有三种启动方式：
 
-**方式一：全局别名（推荐，安装后自动配置）**
+**方式一：在 Cursor 中启动（推荐）**
+
+> "启动代理"
+
+Cursor 会调用 `proxy_start`，MCP 会自动探测或拉起 `mitmproxy-control`。默认**不**设置 Mac 系统代理。
+
+**方式二：全局别名（安装后自动配置）**
 
 ```bash
 proxy
 ```
 
-安装脚本会自动在 `~/.zshrc` 中添加 `proxy` 别名，新终端窗口直接可用。等同于方式二。
+安装脚本会在 `~/.zshrc` 中添加 `proxy` 别名（仅启动 mitmdump，**不带** `--setup-proxy`）。新终端窗口直接可用。
 
-**方式二：启动代理 + 自动设置 Mac 系统代理**
-
-```bash
-uv run mitmproxy-start --setup-proxy
-```
-
-此命令会自动将 Mac Wi-Fi 的 HTTP/HTTPS 代理设置为 `127.0.0.1:8888`，关闭时（Ctrl+C）自动恢复。
-
-**方式三：仅启动代理（手动配置系统代理）**
+**方式三：手动启动**
 
 ```bash
+# 控制服务（MCP 也会自动拉起，通常无需手动运行）
+uv run mitmproxy-control
+
+# 仅启动代理（不设置 Mac 系统代理）
 uv run mitmproxy-start
 ```
 
-需要手动在 Mac 系统设置中配置代理，详见下方「手动配置代理」。
+<details>
+<summary><strong>可选：显式开启 Mac 系统代理</strong>（仅模拟器/本机抓包且用户明确要求时）</summary>
 
-> 保持终端窗口运行，不要关闭。
+```bash
+uv run mitmproxy-start --setup-proxy
+# 或在 Cursor 中说「启动代理并设置 Mac 系统代理」
+```
 
-### 第二步：配置 iOS 模拟器代理
+关闭时（Ctrl+C 或 `proxy_stop`）会自动恢复系统代理。真机抓包时此选项会被强制否决。
 
-**iOS 模拟器会自动使用 Mac 的系统代理设置。**
+</details>
 
-如果使用了 `--setup-proxy`，代理已自动配置完毕，跳到第三步。
+> 保持代理进程运行，不要关闭。控制服务退出时会清理 `runtime.json` 并尽力停止代理。
+
+### 第二步：配置设备代理
+
+**iOS 模拟器**会自动使用 Mac 的系统代理设置（若已开启）。默认不开启 Mac 系统代理时，可在模拟器内手动配置 Wi-Fi 代理指向 `127.0.0.1:8888`。
+
+**Android / iOS 真机**：使用 MCP 工具 `android_setup_proxy`、`android_reverse_proxy` 等，或将设备 Wi-Fi 代理指向 Mac 局域网 IP（如 `192.168.x.x:8888`）。**不要**开启 Mac 系统代理。
 
 <details>
-<summary><strong>手动配置代理</strong>（未使用 --setup-proxy 时）</summary>
+<summary><strong>手动配置 Mac 系统代理</strong>（仅本机/模拟器且已显式开启 setup_proxy 时）</summary>
 
 1. Mac 系统设置 → 网络 → Wi-Fi → 高级 → 代理
 2. 勾选 **网页代理(HTTP)**：`127.0.0.1:8888`
@@ -210,10 +255,7 @@ uv run mitmproxy-start
 
 ### 第五步：停止抓包
 
-在运行代理的终端窗口按 `Ctrl+C` 停止代理。
-
-- 如果使用了 `--setup-proxy`，Mac 系统代理会自动关闭。
-- 如果手动配置了代理，记得在 Mac 系统设置中关闭代理。
+在 Cursor 中说「停止代理」，或运行 `proxy_stop`。若使用了 `--setup-proxy`，Mac 系统代理会自动关闭。
 
 ---
 
@@ -233,13 +275,11 @@ uv run mitmproxy-start
 
 ### 快速启动代理
 
-现在可以直接在 Cursor 中启动代理，无需手动在终端运行命令：
+在 Cursor 中直接对话即可，MCP 会自动管理控制服务与代理：
 
 > "启动代理"
-> "启动代理并设置 Mac 系统代理"
+> "启动代理并设置 Mac 系统代理"（仅模拟器/本机；真机会被否决）
 > "停止代理"
-
-Cursor 会自动调用 `proxy_start` 和 `proxy_stop` 工具来管理代理服务。
 
 ---
 
@@ -297,17 +337,18 @@ mitmproxy-mcp/
 ├── pyproject.toml
 ├── src/
 │   └── mitm_proxy_mcp/
-│       ├── cli/              # 命令行工具
-│       │   └── start.py      # 代理启动脚本
-│       ├── core/             # 核心模块
-│       │   └── sqlite_store.py  # SQLite 流量存储
-│       ├── tools/            # MCP 工具
+│       ├── bridge/           # MCP → 控制服务探测/转发
+│       ├── cli/              # mitmproxy-start CLI
+│       ├── control/          # mitmproxy-control 控制服务
+│       ├── core/             # SQLite 流量/Mock 存储
+│       ├── tools/            # MCP 工具实现
 │       └── server.py         # MCP 服务入口
 ├── tests/
 ├── docs/                     # 文档
 └── resources/                # 资源文件
-    └── MoveCertificate-v1.5.5.zip  # 证书移动模块
 ```
+
+用户数据（控制服务模式）：`~/.mitmscope/`（traffic.db、mock.db、runtime.json）
 
 ## 开发
 

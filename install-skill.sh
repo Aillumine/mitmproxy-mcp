@@ -110,7 +110,7 @@ add_mcp_entry "$ANTIGRAVITY_MCP_CONFIG" "Antigravity"
 echo ""
 echo "[5/5] 配置全局 alias ..."
 
-ALIAS_CMD="alias proxy='uv run --project $SCRIPT_DIR mitmproxy-start --setup-proxy'"
+ALIAS_CMD="alias proxy='uv run --project $SCRIPT_DIR mitmproxy-start'"
 ALIAS_MARKER="# mitmproxy-mcp alias"
 
 add_alias_to_shell() {
@@ -154,7 +154,8 @@ echo '  💬 "mock 这个接口返回 {code: 0}"'
 echo ""
 echo "启动代理（二选一）："
 echo ""
-echo "  proxy                # 全局别名（新终端窗口生效）"
+echo "  proxy                # 全局别名，仅启动 mitmdump（不设置 Mac 系统代理）"
 echo "  # 或当前终端立即使用："
 echo "  source ~/.zshrc && proxy"
 echo ""
+echo "MCP 会自动探测/拉起 mitmproxy-control；数据在 ~/.mitmscope/"

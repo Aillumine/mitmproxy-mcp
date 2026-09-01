@@ -131,7 +131,7 @@ add_mcp_entry "$ANTIGRAVITY_MCP_CONFIG" "Antigravity"
 echo ""
 echo "[6/6] 配置全局 alias ..."
 
-ALIAS_CMD="alias proxy='uv run --project $INSTALL_DIR mitmproxy-start'"
+ALIAS_CMD="alias proxy='uv run --project $INSTALL_DIR mitmproxy-control --proxy'"
 ALIAS_MARKER="# mitmproxy-mcp alias"
 
 add_alias_to_shell() {
@@ -177,7 +177,7 @@ echo "下一步："
 echo "  1. 重启 Cursor / Claude Code 使 MCP 生效"
 echo "  2. 启动代理（二选一）："
 echo ""
-echo "     proxy                # 全局别名，仅启动 mitmdump（不设置 Mac 系统代理）"
+echo "     proxy                # 全局别名，启动控制台网页 + 抓包代理"
 echo "     # 或当前终端立即使用："
 echo "     source ~/.zshrc && proxy"
 echo ""

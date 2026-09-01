@@ -281,6 +281,17 @@ def kill_port_process(port: int) -> bool:
         return False
 
 
+def mitmdump_args(port: int, addon_path: str) -> list[str]:
+    """mitmdump 启动参数。大 body 流式转发，避免整包进内存；不影响 JSON/WSS。"""
+    return [
+        "--listen-host", "0.0.0.0",
+        "-p", str(port),
+        "-s", addon_path,
+        "--set", "ssl_insecure=true",
+        "--set", "stream_large_bodies=1m",
+    ]
+
+
 def main():
     """主函数"""
     import argparse
@@ -346,10 +357,9 @@ def main():
     logger.info("    3. 设置 → 通用 → VPN与设备管理 → 安装描述文件")
     logger.info("    4. 设置 → 通用 → 关于本机 → 证书信任设置 → 启用 mitmproxy")
     logger.info("")
-    logger.opt(colors=True).info("    💻 Mac 系统代理设置:")
-    logger.info("    系统设置 → 网络 → Wi-Fi → 高级 → 代理")
-    logger.info("    网页代理(HTTP): 127.0.0.1:8888")
-    logger.info("    安全网页代理(HTTPS): 127.0.0.1:8888")
+    logger.opt(colors=True).info("    💻 Mac 系统代理:")
+    logger.info("    默认不修改、不覆盖本机系统代理。")
+    logger.info("    抓手机请在设备 Wi-Fi 里填写上面的服务器和端口。")
     logger.info("")
 
     # ========== 设置 Mac 系统代理（可选） ==========
@@ -373,12 +383,9 @@ def main():
 
     process = None
     try:
-        # 直接使用 mitmdump，流量会保存到 SQLite
-        from ..core.sqlite_store import SQLiteTrafficStore
-
         db_path, mock_db_path = resolve_db_paths()
-        store = SQLiteTrafficStore(db_path)
-        store.clear()
+        # 重启代理不清空历史流量，避免 WSS/接口分组在界面上「消失」。
+        # 需要重新开始时用控制台的 Clear。
 
         # 通过环境变量告诉 addon 该用哪个库，再把真实模块路径交给 mitmdump。
         # 这段原本是写到 /tmp 的 200 行 f-string，既不能 import 也无法测试。
@@ -396,27 +403,10 @@ def main():
         # 监听 0.0.0.0 以允许 iOS 模拟器和其他设备连接
         mitmdump_cmd = shutil.which("mitmdump")
         if mitmdump_cmd:
-            # 使用 sys.executable 运行脚本，忽略 shebang 中的错误路径
-            # 添加 --listen-host 0.0.0.0 让代理监听所有网络接口
-            # 添加 --set ssl_insecure=true 允许弱证书和自签名证书（仅用于抓包）
-            cmd = [
-                sys.executable, mitmdump_cmd,
-                "--listen-host", "0.0.0.0",
-                "-p", str(args.port),
-                "-s", addon_path,
-                "--set", "ssl_insecure=true",
-            ]
+            cmd = [sys.executable, mitmdump_cmd, *mitmdump_args(args.port, addon_path)]
         else:
-            # 如果找不到 mitmdump，直接使用 Python API 调用
             from mitmproxy.tools.main import mitmdump
-            # 直接调用 mitmdump 函数（同步调用，会阻塞）
-            sys.argv = [
-                "mitmdump",
-                "--listen-host", "0.0.0.0",
-                "-p", str(args.port),
-                "-s", addon_path,
-                "--set", "ssl_insecure=true",
-            ]
+            sys.argv = ["mitmdump", *mitmdump_args(args.port, addon_path)]
             mitmdump()
             return
         
@@ -484,8 +474,6 @@ def main():
                 logger.warning(f"    关闭 Mac 代理时出错: {e}")
         
         logger.opt(colors=True).success("    ✓ 代理已停止")
-        if not proxy_enabled:
-            logger.warning("    ⚠️  记得关闭 Mac 系统代理设置!")
         logger.info("")
 
 

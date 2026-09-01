@@ -40,6 +40,7 @@ async def _call_proxy_start(arguments: dict[str, Any]) -> dict[str, Any]:
         "proxy_start",
         port=arguments.get("port", 8888),
         setup_proxy=arguments.get("setup_proxy", False),
+        open_ui=arguments.get("open_ui", False),
     )
 
 

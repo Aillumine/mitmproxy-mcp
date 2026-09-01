@@ -15,9 +15,25 @@ from mitmproxy import http
 # 而不是运行时用 f-string 拼出来。
 DB_PATH = os.environ.get("MITMPROXY_DB_PATH", "/tmp/mitmproxy-traffic.db")
 MOCK_DB_PATH = os.environ.get("MITMPROXY_MOCK_DB_PATH", "/tmp/mitmproxy-mock.db")
+CAPTURE_BODY_LIMIT = 1_048_576
+_BINARY_MIME_PREFIXES = ("image/", "video/", "audio/", "font/")
+_BINARY_MIMES = {"application/octet-stream", "application/wasm"}
+
+_traffic_conn: sqlite3.Connection | None = None
+_mock_cache: dict = {"mtime": None, "rules": None}
+
+
+def _get_traffic_conn() -> sqlite3.Connection:
+    global _traffic_conn
+    if _traffic_conn is None:
+        _traffic_conn = sqlite3.connect(DB_PATH, timeout=10)
+        _traffic_conn.execute("PRAGMA journal_mode=WAL")
+        _traffic_conn.execute("PRAGMA synchronous=NORMAL")
+    return _traffic_conn
+
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_traffic_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS traffic (
             id TEXT PRIMARY KEY,
@@ -39,7 +55,70 @@ def init_db():
         )
     """)
     conn.commit()
-    conn.close()
+
+
+def _header_map(headers) -> dict[str, str]:
+    if not headers:
+        return {}
+    try:
+        return {str(key): str(value) for key, value in dict(headers).items()}
+    except Exception:
+        return {}
+
+
+def _header_ci(headers: dict[str, str], name: str) -> str:
+    want = name.lower()
+    for key, value in headers.items():
+        if key.lower() == want:
+            return value
+    return ""
+
+
+def _clean_mime(content_type: str) -> str:
+    return (content_type or "").split(";")[0].strip().lower()
+
+
+def is_websocket_handshake(headers) -> bool:
+    mapping = headers if isinstance(headers, dict) else _header_map(headers)
+    return _header_ci(mapping, "upgrade").lower() == "websocket"
+
+
+def declared_body_size(headers) -> int:
+    mapping = headers if isinstance(headers, dict) else _header_map(headers)
+    raw = _header_ci(mapping, "content-length")
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def should_store_body(content_type: str, url: str, headers=None) -> bool:
+    """JSON/文本/接口 body 入库；图片视频等二进制不入库。WebSocket 握手始终保留。"""
+    mapping = headers if isinstance(headers, dict) else _header_map(headers or {})
+    if is_websocket_handshake(mapping):
+        return True
+    mime = _clean_mime(content_type)
+    if mime.startswith(_BINARY_MIME_PREFIXES) or mime in _BINARY_MIMES:
+        return False
+    resource = infer_resource_type(content_type, url)
+    return resource not in ("Image", "Media", "Font")
+
+
+def should_stream_body(content_type: str, url: str, headers=None) -> bool:
+    """流式=边收边转发给客户端，不在代理里拼完整 body。WSS 握手绝不能 stream。"""
+    mapping = headers if isinstance(headers, dict) else _header_map(headers or {})
+    if is_websocket_handshake(mapping):
+        return False
+    return not should_store_body(content_type, url, mapping)
+
+
+def websocket_url(url: str) -> str:
+    """mitmproxy 把 WSS 记成 https://，列表分组需要还原成 wss://。"""
+    if url.startswith("https://"):
+        return "wss://" + url[len("https://") :]
+    if url.startswith("http://"):
+        return "ws://" + url[len("http://") :]
+    return url
 
 def infer_resource_type(mime_type: str, url: str) -> str:
     """推断资源类型"""
@@ -61,12 +140,36 @@ def infer_resource_type(mime_type: str, url: str) -> str:
         return "Image"
     if "javascript" in mime_lower or ext in (".js", ".mjs"):
         return "Script"
+    if mime_lower.startswith("video/") or mime_lower.startswith("audio/") or ext in (
+        ".mp4", ".mp3", ".webm", ".ogg", ".wav", ".m4a", ".mov",
+    ):
+        return "Media"
+    if "font" in mime_lower or ext in (".woff", ".woff2", ".ttf", ".otf"):
+        return "Font"
     if "json" in mime_lower or "xml" in mime_lower or ext in (".json", ".xml"):
         return "XHR"
     if mime_lower.startswith("application/"):
         return "XHR"
     
     return "Other"
+
+
+_HTML_START = re.compile(
+    r"^(?:<!doctype\s+html|<!--|<html[\s>]|<[a-z][\w:.-]*(?:[\s/>]|$))",
+    re.I,
+)
+
+
+def looks_like_html(raw) -> bool:
+    """Content-Type 不是 text/html 时，仍把 HTML 片段归为 Document。"""
+    if not raw:
+        return False
+    if isinstance(raw, bytes):
+        text = raw[:512].decode("utf-8", errors="ignore")
+    else:
+        text = str(raw)[:512]
+    text = text.lstrip("\ufeff \t\r\n")
+    return bool(_HTML_START.match(text))
 
 def match_url(url, pattern, match_type):
     """检查 URL 是否匹配 mock 规则"""
@@ -87,23 +190,32 @@ def match_url(url, pattern, match_type):
         return pattern in url
 
 def find_matching_mock(url, method):
-    """查找匹配的 mock 规则"""
+    """查找匹配的 mock 规则（按 mock 库 mtime 缓存，避免每个请求扫盘）。"""
     if not Path(MOCK_DB_PATH).exists():
+        _mock_cache["mtime"] = None
+        _mock_cache["rules"] = []
         return None
     try:
-        conn = sqlite3.connect(MOCK_DB_PATH, timeout=5)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM mock_rules WHERE enabled = 1 ORDER BY updated_at DESC"
-        ).fetchall()
-        conn.close()
-        
-        for row in rows:
-            rule_method = row["method"] or ""
-            if rule_method and rule_method != method.upper():
+        mtime = Path(MOCK_DB_PATH).stat().st_mtime
+        rules = _mock_cache.get("rules")
+        if rules is None or _mock_cache.get("mtime") != mtime:
+            conn = sqlite3.connect(MOCK_DB_PATH, timeout=5)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM mock_rules WHERE enabled = 1 ORDER BY updated_at DESC"
+            ).fetchall()
+            conn.close()
+            rules = [dict(row) for row in rows]
+            _mock_cache["mtime"] = mtime
+            _mock_cache["rules"] = rules
+
+        method_upper = (method or "").upper()
+        for rule in rules:
+            rule_method = rule.get("method") or ""
+            if rule_method and rule_method != method_upper:
                 continue
-            if match_url(url, row["url_pattern"], row["match_type"] or "contains"):
-                return dict(row)
+            if match_url(url, rule["url_pattern"], rule.get("match_type") or "contains"):
+                return rule
         return None
     except Exception as e:
         print(f"[Mock] Error reading rules: {e}")
@@ -124,8 +236,67 @@ def increment_mock_hit(rule_id):
 
 counter = [0]
 
+
+def _is_connect_tunnel(flow) -> bool:
+    return (getattr(flow.request, "method", "") or "").upper() == "CONNECT"
+
+
+def _flow_headers(headers) -> dict[str, str]:
+    if not headers:
+        return {}
+    if isinstance(headers, dict):
+        return {str(key): str(value) for key, value in headers.items()}
+    try:
+        return {str(key): str(value) for key, value in headers.items()}
+    except Exception:
+        return _header_map(headers)
+
+
+def _store_payload(headers: dict[str, str], raw, store: bool) -> tuple[bytes | None, int]:
+    if not store:
+        return None, declared_body_size(headers)
+    if not raw:
+        return None, 0
+    size = len(raw)
+    if size > CAPTURE_BODY_LIMIT:
+        return raw[:CAPTURE_BODY_LIMIT], size
+    return raw, size
+
+
+def _delete_header_ci(headers, name: str) -> None:
+    if headers is None:
+        return
+    want = name.lower()
+    try:
+        for key in list(headers.keys()):
+            if str(key).lower() == want:
+                del headers[key]
+    except Exception:
+        if isinstance(headers, dict):
+            for key in list(headers.keys()):
+                if str(key).lower() == want:
+                    headers.pop(key, None)
+
+
+def _strip_websocket_extensions(flow) -> None:
+    """
+    去掉 permessage-deflate。
+
+    OkHttp + Socket.IO 会协商压缩；mitmproxy 拆开再转发时，1 字节的
+    Engine.IO ping/pong（2/3）能过，带 JSON 的 OPEN（0{sid}）会被弄坏，
+    App 就表现为 WSS「连不上」，关掉代理则正常。
+    """
+    headers = getattr(getattr(flow, "request", None), "headers", None)
+    if headers is None or not is_websocket_handshake(_flow_headers(headers)):
+        return
+    _delete_header_ci(headers, "sec-websocket-extensions")
+
+
 def request(flow):
     """在请求阶段检查 mock 规则，匹配则直接返回 mock 响应"""
+    if _is_connect_tunnel(flow):
+        return
+    _strip_websocket_extensions(flow)
     url = flow.request.pretty_url
     method = flow.request.method
     
@@ -153,57 +324,139 @@ def request(flow):
     counter[0] += 1
     print(f"[{counter[0]}] [MOCK] {method} {url[:80]} -> {mock_rule.get('status_code', 200)} (rule: {mock_rule['name']})")
 
+
+def responseheaders(flow):
+    """在 body 到达前决定是否流式转发。JSON/WSS 不 stream，避免抓不到内容。"""
+    if _is_connect_tunnel(flow) or not getattr(flow, "response", None):
+        return
+    req_headers = _flow_headers(flow.request.headers)
+    res_headers = _flow_headers(flow.response.headers)
+    if is_websocket_handshake(req_headers):
+        _delete_header_ci(flow.response.headers, "sec-websocket-extensions")
+        return
+    content_type = _header_ci(res_headers, "content-type")
+    if should_stream_body(content_type, flow.request.pretty_url, req_headers):
+        flow.response.stream = True
+
+
 def response(flow):
+    if _is_connect_tunnel(flow):
+        return
     counter[0] += 1
     record_id = f"req-{counter[0]}"
 
     if not flow.response:
         return
-    
+
     try:
+        req_headers = _flow_headers(flow.request.headers)
+        res_headers = _flow_headers(flow.response.headers)
         url = flow.request.pretty_url
+        if is_websocket_handshake(req_headers):
+            url = websocket_url(url)
         domain = flow.request.host
-        
-        content_type = flow.response.headers.get("content-type", "")
-        resource_type = infer_resource_type(content_type, url)
-        
+        content_type = _header_ci(res_headers, "content-type")
+        resource_type = (
+            "WebSocket" if is_websocket_handshake(req_headers)
+            else infer_resource_type(content_type, url)
+        )
+
         if flow.response.timestamp_end and flow.request.timestamp_start:
             time_ms = (flow.response.timestamp_end - flow.request.timestamp_start) * 1000
         else:
             time_ms = 0.0
 
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            conn.execute("""
-                INSERT OR REPLACE INTO traffic (
-                    id, timestamp, method, url, domain, status,
-                    resource_type, size, time_ms, request_headers,
-                    request_body, response_headers, response_body, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                record_id,
-                time.time(),
-                flow.request.method,
-                url,
-                domain,
-                flow.response.status_code,
-                resource_type,
-                len(flow.response.content) if flow.response.content else 0,
-                time_ms,
-                json.dumps(dict(flow.request.headers)),
-                flow.request.content,
-                json.dumps(dict(flow.response.headers)),
-                flow.response.content,
-                None
-            ))
-            conn.commit()
-            is_mock = flow.response.headers.get("X-Mock-Rule", "")
-            tag = " [MOCK]" if is_mock else ""
-            print(f"[{counter[0]}]{tag} {flow.request.method} {url[:80]}")
-        finally:
-            conn.close()
+        store_res = should_store_body(content_type, url, req_headers)
+        store_req = should_store_body(
+            _header_ci(req_headers, "content-type"), url, req_headers
+        )
+        res_raw = flow.response.content if store_res else None
+        req_raw = flow.request.content if store_req else None
+        if resource_type in ("Other", "XHR") and looks_like_html(res_raw):
+            resource_type = "Document"
+        res_body, size = _store_payload(res_headers, res_raw, store_res)
+        req_body, req_size = _store_payload(req_headers, req_raw, store_req)
+
+        conn = _get_traffic_conn()
+        conn.execute("""
+            INSERT OR REPLACE INTO traffic (
+                id, timestamp, method, url, domain, status,
+                resource_type, size, time_ms, request_headers,
+                request_body, request_body_size, response_headers, response_body, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            record_id,
+            time.time(),
+            flow.request.method,
+            url,
+            domain,
+            flow.response.status_code,
+            resource_type,
+            size,
+            time_ms,
+            json.dumps(req_headers),
+            req_body,
+            req_size,
+            json.dumps(res_headers),
+            res_body,
+            None
+        ))
+        conn.commit()
+        is_mock = _header_ci(res_headers, "x-mock-rule")
+        tag = " [MOCK]" if is_mock else ""
+        print(f"[{counter[0]}]{tag} {flow.request.method} {url[:80]}")
     except Exception as e:
         print(f"Error saving traffic: {e}")
+
+
+def websocket_message(flow):
+    """把 Socket.IO / WSS 帧写入流量表，而不是只留一条空的 HTTP 101。"""
+    ws = getattr(flow, "websocket", None)
+    messages = getattr(ws, "messages", None) if ws is not None else None
+    if not messages:
+        return
+    msg = messages[-1]
+    content = getattr(msg, "content", b"") or b""
+    if len(content) > CAPTURE_BODY_LIMIT:
+        content = content[:CAPTURE_BODY_LIMIT]
+    from_client = bool(getattr(msg, "from_client", False))
+    req_headers = _flow_headers(getattr(flow.request, "headers", {}) or {})
+    url = websocket_url(getattr(flow.request, "pretty_url", "") or "")
+    domain = getattr(flow.request, "host", "") or ""
+    counter[0] += 1
+    try:
+        conn = _get_traffic_conn()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO traffic (
+                id, timestamp, method, url, domain, status,
+                resource_type, size, time_ms, request_headers,
+                request_body, request_body_size, response_headers, response_body, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"ws-{counter[0]}",
+                time.time(),
+                "WS",
+                url,
+                domain,
+                101,
+                "WebSocket",
+                len(content),
+                0.0,
+                json.dumps(req_headers),
+                content if from_client else None,
+                len(content) if from_client else 0,
+                "{}",
+                None if from_client else content,
+                None,
+            ),
+        )
+        conn.commit()
+        direction = "→" if from_client else "←"
+        print(f"[{counter[0]}] [WS{direction}] {url[:80]}")
+    except Exception as e:
+        print(f"Error saving websocket: {e}")
 
 
 def tls_failed_client(data):
@@ -232,37 +485,34 @@ def tls_failed_client(data):
         counter[0] += 1
         record_id = f"tls-{counter[0]}"
 
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO traffic (
-                    id, timestamp, method, url, domain, status, resource_type,
-                    size, time_ms, request_headers, request_body,
-                    request_body_size, response_headers, response_body, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record_id,
-                    time.time(),
-                    "CONNECT",
-                    f"https://{sni}",
-                    sni,
-                    0,
-                    "TLS",
-                    0,
-                    0.0,
-                    "{}",
-                    None,
-                    0,
-                    "{}",
-                    None,
-                    str(error),
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn = _get_traffic_conn()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO traffic (
+                id, timestamp, method, url, domain, status, resource_type,
+                size, time_ms, request_headers, request_body,
+                request_body_size, response_headers, response_body, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                time.time(),
+                "CONNECT",
+                f"https://{sni}",
+                sni,
+                0,
+                "TLS",
+                0,
+                0.0,
+                "{}",
+                None,
+                0,
+                "{}",
+                None,
+                str(error),
+            ),
+        )
+        conn.commit()
 
         print(f"[{counter[0]}] [TLS-FAIL] {sni} -> {error}")
 

@@ -1,6 +1,6 @@
 ---
 name: traffic-capture
-description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口数据。支持启动/停止代理、搜索流量、查看请求详情和响应体、对比接口返回与 Model 字段差异、添加/管理 mock 规则、选中 Model 字段自动关联接口并 mock。触发词：抓包、抓接口、proxy、流量分析、接口对比、网络请求分析、traffic、抓取接口数据、mock、mock数据、mock接口、模拟数据、模拟接口、mock返回、拦截接口、mitmproxy、mock字段、mock这个字段、改成、模拟返回
+description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口数据。支持启动/停止代理、adb reverse 免手填 Wi‑Fi、搜索流量、查看请求详情和响应体、对比接口返回与 Model 字段差异、添加/管理 mock 规则、选中 Model 字段自动关联接口并 mock。触发词：抓包、抓接口、proxy、流量分析、接口对比、网络请求分析、traffic、抓取接口数据、自动配代理、免手填、reverse、mock、mock数据、mock接口、模拟数据、模拟接口、mock返回、拦截接口、mitmproxy、mock字段、mock这个字段、改成、模拟返回、dreaction
 ---
 
 # 流量抓包、分析与 Mock
@@ -65,10 +65,49 @@ description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口�
 | `ios_shutdown_simulator` | 关闭模拟器 |
 | `ios_get_device_info` | 获取 iOS 设备信息 |
 | `android_list_devices` | 列出 Android 设备 |
-| `android_setup_proxy` | 设置 Android 代理（需 serial + proxy_host） |
-| `android_clear_proxy` | 清除 Android 代理（需 serial） |
+| `android_setup_proxy` | 设置 Android 全局代理为 MacIP:port（需同网） |
+| `android_clear_proxy` | 清除 Android 全局代理 |
+| `android_get_proxy` | 读取设备当前 `http_proxy` |
+| `android_reverse_proxy` | **推荐**：adb reverse + `127.0.0.1:port`（免手填 Wi‑Fi） |
+| `android_reverse_proxy_remove` | 拆除 reverse 并清除设备代理 |
 | `android_get_device_info` | 获取 Android 设备信息 |
 | `get_cert_info` | 获取 CA 证书安装指南 |
+
+## 开始抓包：触发条件与接入决策
+
+详细说明见 [`docs/proxy-access-and-dreaction-sync.md`](../../../docs/proxy-access-and-dreaction-sync.md)。
+
+### 话术 → 动作（必须遵守）
+
+| 用户说法（触发） | 动作 |
+|------------------|------|
+| 「开始抓包 / 抓接口 / 启动代理 / 自动配代理 / 免手填 Wi‑Fi」且目标是 Android 或未声明只抓 Mac | **方案 A**：`proxy_start` → `android_list_devices` → `android_reverse_proxy`（**不要** `setup_proxy=true`） |
+| 「用 Wi‑Fi 代理 / 没插 USB / 不要 reverse」 | `proxy_start` → `android_setup_proxy(serial, MacIP, port)` 或口头指导手动填 Wi‑Fi |
+| 「也抓电脑 / 开系统代理 / 抓 Mac 浏览器」 | 仅非真机时 `proxy_start(setup_proxy=true)`；真机禁止 |
+| 「停止抓包」 | 若本次设过 reverse → `android_reverse_proxy_remove` → `proxy_stop` |
+| 「和 dreaction 同步」 | 说明 App 内 host 是调试桥 9600 不是 mitm；今天用方案 A；Desktop 同步属方案 B（未落地） |
+| reverse 已配仍无流量（已排证书/包名） | 可能 App 忽略系统代理 → 评估方案 C，勿反复改 Wi‑Fi |
+
+**优先级：** A（reverse）→ 无 adb 再 Wi‑Fi → 明确要求才开 Mac 系统代理 → 系统代理无效才考虑 C。
+
+### 方案 A 详细步骤（默认）
+
+```
+1. proxy_status；未运行则 proxy_start(port=8888)（setup_proxy 默认 false）
+2. android_list_devices → 取 serial（多台时用用户指定或第一台并告知）
+3. android_reverse_proxy(serial, port=8888)   # 或与 status 中端口一致
+4. android_get_proxy(serial) 自检，期望 127.0.0.1:8888
+5. 告知用户：无需改手机 Wi‑Fi，直接操作 App
+6. 首次 HTTPS：get_cert_info / android_cert_status，按需装证
+7. 用户操作后 traffic_list / traffic_search 验证
+```
+
+### 方案 B / C（产品扩展，非默认执行）
+
+- **B**：`~/.mitmscope/runtime.json` 为真相源，dreaction Desktop 只读展示 / 一键同步 —— 触发：需要 GUI 与 MCP 状态对齐
+- **C**：SDK Custom Command `applyHttpProxy` 写入 OkHttp Proxy —— 触发：A 已成功但目标 App 仍抓不到（忽略全局 http_proxy）
+
+Agent **不要**把 dreaction ConfigDialog 的 host 当成 mitm 代理去读。
 
 ## 常用工作流
 
@@ -93,15 +132,9 @@ description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口�
 5. 输出对比表格：字段名 | Model是否有 | 类型 | 备注
 ```
 
-### 3. 首次配置代理
+### 3. 首次 / 开始抓包（替代「手填 Wi‑Fi」）
 
-```
-步骤：
-1. proxy_start(port=8888) → 启动代理
-2. get_cert_info → 获取证书安装指南，告知用户安装
-3. 设备配置代理指向本机 IP:8888
-4. proxy_status → 确认流量捕获正常
-```
+默认走上方 **方案 A**。仅当无 adb 时改用 `android_setup_proxy` 或让用户手填 `MacIP:8888`。
 
 ### 4. Mock 接口数据
 
@@ -219,7 +252,7 @@ Phase 4: 分别读取两个接口的原始响应，把 vip_level 改为 5，创�
 - `traffic_read_body` 默认只读 4000 字符，大响应需要用 `offset` 分页读取
 - `traffic_search` 的 `search_in` 是数组，如 `["url"]`、`["response_body"]`、`["url", "response_body"]`
 - `traffic_list` 的 `filter_url` 支持正则表达式
-- 如果代理未运行，先用 `proxy_start` 启动或提醒用户在终端执行 `uv run mitmproxy-start`
+- 如果代理未运行，先用 `proxy_start` 启动，或提醒用户在终端执行 `proxy`（`uv run mitmproxy-control --proxy`）
 - Mock 规则实时生效，代理运行中无需重启
 - 被 mock 的请求仍会记录到流量中，响应头带 `X-Mock-Rule` 标识
 - Mock 规则按 `updated_at` 倒序匹配，最新更新的规则优先

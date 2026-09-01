@@ -99,11 +99,11 @@ def test_proxy_start_strips_setup_proxy_for_device(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
     captured = {}
 
-    def fake_popen(cmd, **kwargs):
+    def fake_launch(cmd, project_root=None):
         captured["cmd"] = cmd
         raise RuntimeError("stop")
 
-    monkeypatch.setattr(proxy_tools.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(proxy_tools, "_launch_proxy", fake_launch)
     result = proxy_tools.proxy_start(setup_proxy=True)
 
     assert "--setup-proxy" not in captured.get("cmd", [])

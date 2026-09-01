@@ -95,7 +95,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "setup_proxy": {
                         "type": "boolean",
-                        "description": "是否自动设置 Mac Wi-Fi 系统代理，默认 False",
+                        "description": "是否自动设置 Mac Wi-Fi 系统代理。默认 False：不修改、不覆盖本机系统代理",
                         "default": False,
                     },
                 },

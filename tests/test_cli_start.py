@@ -57,3 +57,13 @@ def test_falls_back_without_runtime_file(monkeypatch, tmp_path):
 
     assert traffic_db == tmp_path / "default-traffic.db"
     assert mock_db == tmp_path / "default-mock.db"
+
+
+def test_mitmdump_args_stream_large_bodies():
+    from mitm_proxy_mcp.cli.start import mitmdump_args
+
+    args = mitmdump_args(8888, "/tmp/addon.py")
+    assert "stream_large_bodies=1m" in args
+    assert "ssl_insecure=true" in args
+    assert "-p" in args
+    assert "8888" in args

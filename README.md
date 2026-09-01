@@ -47,6 +47,32 @@
 
 > 不自动迁移 `/tmp` 旧库；需要历史数据请手动复制或重新抓包。
 
+### 本机网页
+
+控制服务托管一个本机网页控制台（流量 / Mock / 代理 / 设备），与 MCP **共用同一套** `~/.mitmscope/` 数据库（`traffic.db`、`mock.db`）。
+
+```bash
+# 构建前端（产物写入 Python 包内的 webui/）
+cd web && npm run build
+
+# 启动控制服务
+uv run mitmproxy-control
+```
+
+启动日志会打印 `UI: http://127.0.0.1:{port}/`，用浏览器打开该地址即可。需要自动打开浏览器时加 `--open`：
+
+```bash
+# 日常一条命令：网页控制台 + 抓包代理 + 打开浏览器
+uv run mitmproxy-control --proxy
+# 或全局别名 / 入口：
+proxy
+uv run proxy
+```
+
+`--proxy` 会启动控制服务、打开本机网页，并在后台拉起 `mitmproxy-start`（不另开终端、默认不改 Mac 系统代理）。只要网页、不要代理时用 `uv run mitmproxy-control --open`。
+
+MCP 自动拉起控制服务时**不会**带 `--open` / `--proxy`，也不会弹出浏览器。在本机网页点「启动」也可以再拉起代理。
+
 ### 真机抓包：禁止 Mac 系统代理
 
 真机（Android / iOS）抓包时，**不会也不应**设置 Mac Wi-Fi 系统代理，避免污染本机网络。推荐路径：mitm 只监听 + `android_reverse_proxy` / 设备 Wi-Fi 指向 Mac IP。
@@ -174,6 +200,7 @@ proxy
 ```bash
 # 控制服务（MCP 也会自动拉起，通常无需手动运行）
 uv run mitmproxy-control
+# 同时打开本机网页：uv run mitmproxy-control --open
 
 # 仅启动代理（不设置 Mac 系统代理）
 uv run mitmproxy-start
@@ -195,9 +222,19 @@ uv run mitmproxy-start --setup-proxy
 
 ### 第二步：配置设备代理
 
-**iOS 模拟器**会自动使用 Mac 的系统代理设置（若已开启）。默认不开启 Mac 系统代理时，可在模拟器内手动配置 Wi-Fi 代理指向 `127.0.0.1:8888`。
+完整触发条件、方案 A/B/C（与 dreaction 同步）见 **[docs/proxy-access-and-dreaction-sync.md](docs/proxy-access-and-dreaction-sync.md)**。
 
-**Android / iOS 真机**：使用 MCP 工具 `android_setup_proxy`、`android_reverse_proxy` 等，或将设备 Wi-Fi 代理指向 Mac 局域网 IP（如 `192.168.x.x:8888`）。**不要**开启 Mac 系统代理。
+**Android 默认（推荐，免手填 Wi‑Fi）：**
+
+1. 启动代理（`proxy_start`，不要开 Mac 系统代理）
+2. `android_list_devices` → `android_reverse_proxy(serial, 8888)`
+3. 设备全局代理变为 `127.0.0.1:8888`，经 USB adb reverse 到本机 mitm
+
+**仅在无 adb / 必须无线同网时**：`android_setup_proxy(serial, MacIP, 8888)`，或手动将手机 Wi‑Fi 代理指向 `192.168.x.x:8888`。
+
+**iOS 模拟器**：可跟随 Mac 系统代理（需用户明确要求 `setup_proxy=true`）；否则在模拟器 Wi‑Fi 填 `127.0.0.1:8888`。
+
+**真机抓包不要开启 Mac 系统代理。**
 
 <details>
 <summary><strong>手动配置 Mac 系统代理</strong>（仅本机/模拟器且已显式开启 setup_proxy 时）</summary>
@@ -263,7 +300,7 @@ uv run mitmproxy-start --setup-proxy
 
 | 工具 | 说明 |
 |-----|------|
-| `proxy_start` | **启动代理服务**（后台运行，无需手动在终端运行）|
+| `proxy_start` | **启动代理服务**（后台运行，默认不改 Mac 系统代理）|
 | `proxy_stop` | **停止代理服务** |
 | `proxy_status` | 获取代理状态 |
 | `traffic_list` | 列出流量（支持域名/状态码/类型筛选）|
@@ -344,6 +381,7 @@ mitmproxy-mcp/
 │       ├── tools/            # MCP 工具实现
 │       └── server.py         # MCP 服务入口
 ├── tests/
+├── web/                      # 本机网页（Vite + React）
 ├── docs/                     # 文档
 └── resources/                # 资源文件
 ```

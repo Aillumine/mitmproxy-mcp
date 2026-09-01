@@ -34,3 +34,7 @@ build/
 /tmp/
 *.log
 .worktrees/
+
+# Frontend
+web/node_modules
+

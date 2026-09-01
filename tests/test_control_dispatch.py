@@ -61,8 +61,8 @@ async def test_invoke_proxy_start_uses_server_defaults(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_proxy_start(port: int, setup_proxy: bool):
-        captured.update(port=port, setup_proxy=setup_proxy)
+    def fake_proxy_start(port: int, setup_proxy: bool, open_ui: bool = False):
+        captured.update(port=port, setup_proxy=setup_proxy, open_ui=open_ui)
         return {"success": True}
 
     monkeypatch.setattr(
@@ -71,7 +71,26 @@ async def test_invoke_proxy_start_uses_server_defaults(monkeypatch):
 
     await dispatch.invoke_tool("proxy_start", {})
 
-    assert captured == {"port": 8888, "setup_proxy": False}
+    assert captured == {"port": 8888, "setup_proxy": False, "open_ui": False}
+
+
+@pytest.mark.asyncio
+async def test_invoke_proxy_start_forwards_open_ui(monkeypatch):
+    from mitm_proxy_mcp.control import dispatch
+
+    captured: dict[str, object] = {}
+
+    def fake_proxy_start(port: int, setup_proxy: bool, open_ui: bool = False):
+        captured.update(port=port, setup_proxy=setup_proxy, open_ui=open_ui)
+        return {"success": True}
+
+    monkeypatch.setattr(
+        "mitm_proxy_mcp.tools.proxy_tools.proxy_start", fake_proxy_start
+    )
+
+    await dispatch.invoke_tool("proxy_start", {"open_ui": True})
+
+    assert captured["open_ui"] is True
 
 
 @pytest.mark.asyncio

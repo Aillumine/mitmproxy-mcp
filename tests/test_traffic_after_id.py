@@ -68,6 +68,45 @@ def test_unknown_after_id_returns_unfiltered_records(
     assert [request["id"] for request in result["requests"]] == ["new", "old"]
 
 
+def test_traffic_list_hides_connect_tunnels_but_keeps_tls_failures(
+    traffic_store: SQLiteTrafficStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    traffic_store.add(_record("get", 100.0))
+    traffic_store.add(
+        TrafficRecord(
+            id="connect",
+            timestamp=200.0,
+            method="CONNECT",
+            url="https://api.example.com:443/",
+            domain="api.example.com",
+            status=0,
+            resource_type="Other",
+            size=0,
+            time_ms=0.0,
+        )
+    )
+    traffic_store.add(
+        TrafficRecord(
+            id="tls",
+            timestamp=300.0,
+            method="CONNECT",
+            url="https://pinned.example.com",
+            domain="pinned.example.com",
+            status=0,
+            resource_type="TLS",
+            size=0,
+            time_ms=0.0,
+            error="certificate verify failed",
+        )
+    )
+    monkeypatch.setattr(SQLiteTrafficStore, "exists", lambda: True)
+    monkeypatch.setattr(traffic_tools, "_get_store", lambda: traffic_store)
+
+    result = traffic_tools.traffic_list()
+
+    assert [request["id"] for request in result["requests"]] == ["tls", "get"]
+
+
 @pytest.mark.asyncio
 async def test_dispatch_forwards_after_id(monkeypatch: pytest.MonkeyPatch) -> None:
     from mitm_proxy_mcp.control import dispatch

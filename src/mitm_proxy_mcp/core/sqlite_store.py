@@ -205,6 +205,11 @@ class SQLiteTrafficStore:
                     params.append(cursor["timestamp"])
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
+            # CONNECT 是 HTTPS 建隧道，不是业务请求；TLS 握手失败仍要保留。
+            where_clause = (
+                f"({where_clause}) AND "
+                "(UPPER(method) != 'CONNECT' OR UPPER(resource_type) = 'TLS')"
+            )
             params.extend([limit, offset])
             rows = conn.execute(f"""
                 SELECT * FROM traffic

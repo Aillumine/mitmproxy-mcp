@@ -47,15 +47,43 @@ MCP 启动时会自动探测或拉起本地控制服务（`mitmproxy-control`）
 ### 证书
 - `get_cert_info` — 获取 CA 证书安装指南
 
-## 典型工作流
+### Android 设备代理（开始抓包默认用）
+- `android_list_devices` / `android_get_device_info`
+- `android_reverse_proxy` / `android_reverse_proxy_remove` — **默认推荐**，免手填 Wi‑Fi
+- `android_setup_proxy` / `android_clear_proxy` / `android_get_proxy` — 同网 Wi‑Fi / 自检
 
-### 抓包
-1. 用户说"开始抓包" → 调用 `proxy_start()`（默认 `setup_proxy=false`）；真机用 `android_setup_proxy` / `android_reverse_proxy`
+## 开始抓包：触发条件（默认方案 A）
+
+完整决策树与方案 A/B/C 见 `docs/proxy-access-and-dreaction-sync.md`。
+
+| 触发说法 | 动作 |
+|----------|------|
+| 开始抓包 / 抓接口 / 启动代理 / 自动配代理 / 免手填 Wi‑Fi（Android 或未声明只抓 Mac） | `proxy_start()` → `android_list_devices` → `android_reverse_proxy(serial, port)` → `android_get_proxy` 自检 |
+| 用 Wi‑Fi 代理 / 没插 USB / 不要 reverse | `proxy_start()` → `android_setup_proxy(serial, MacIP, port)` 或指导手动填 Wi‑Fi |
+| 也抓电脑 / 开系统代理 / 抓 Mac | 仅非真机：`proxy_start(setup_proxy=true)`；真机禁止 |
+| 停止抓包 | 本次若设过 reverse → `android_reverse_proxy_remove` → `proxy_stop` |
+| 和 dreaction 同步 | dreaction 的 host 是调试桥 9600，不是 mitm；今天用 reverse（方案 A） |
+
+**禁止：** 把 dreaction App 设置里的 host 当成抓包代理去读；真机抓包时传 `setup_proxy=true`。
+
+### 方案 A 步骤（开始抓包默认执行）
+
+1. `proxy_status`；未运行则 `proxy_start(port=8888)`（`setup_proxy=false`）
+2. `android_list_devices` 取 serial
+3. `android_reverse_proxy(serial, port=8888)`
+4. `android_get_proxy` 确认 `127.0.0.1:8888`
+5. 告知用户无需改手机 Wi‑Fi，直接操作 App
+6. 需要 HTTPS 时再 `get_cert_info` / 证书相关工具
+
+### 典型工作流
+
+#### 抓包
+1. 用户说"开始抓包" → **按上方方案 A**（优先 reverse，不要默认让用户手填 Wi‑Fi）
 2. 用户说"抓下 XX 接口" → 先 `proxy_status` 确认代理在运行，然后等用户操作，再用 `traffic_list` + `traffic_search` 查找
 3. 用户说"看下数据" → 用 `traffic_read_body` 读取响应体
-4. 用户说"停止抓包" → 调用 `proxy_stop`
+4. 用户说"停止抓包" → 若本次设过 reverse 则先 `android_reverse_proxy_remove`，再 `proxy_stop`
 
-### Mock 数据
+#### Mock 数据
 1. 用户说"mock XX 接口" → 调用 `mock_add` 添加规则（name=描述, url_pattern=URL 匹配, response_body=JSON 响应）
 2. 用户说"看下 mock 规则" → 调用 `mock_list`
 3. 用户说"修改 mock 返回" → 调用 `mock_update(rule_id, response_body=新响应)`

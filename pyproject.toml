@@ -24,6 +24,7 @@ dev = [
 mitmproxy-mcp = "mitm_proxy_mcp.server:main"
 mitmproxy-start = "mitm_proxy_mcp.cli.start:main"
 mitmproxy-control = "mitm_proxy_mcp.control.main:main"
+proxy = "mitm_proxy_mcp.control.main:main_proxy"
 
 [build-system]
 requires = ["hatchling"]
@@ -31,6 +32,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mitm_proxy_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/mitm_proxy_mcp/webui" = "mitm_proxy_mcp/webui"
 
 [tool.ruff]
 line-length = 88

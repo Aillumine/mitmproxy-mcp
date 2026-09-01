@@ -26,7 +26,11 @@ def test_health_requires_valid_bearer_token():
     """健康检查拒绝缺失或错误的 Bearer token。"""
     from mitm_proxy_mcp.control.app import create_app
 
-    app = create_app(token="secret", proxy_status=lambda: {"running": True})
+    app = create_app(
+        token="secret",
+        proxy_status=lambda: {"running": True},
+        get_listen_ip=lambda: "192.168.1.8",
+    )
     client = TestClient(app)
 
     assert client.get("/v1/health").status_code == 401
@@ -43,6 +47,7 @@ def test_health_requires_valid_bearer_token():
         "version": "1.0.0",
         "proxy_running": True,
         "pid": os.getpid(),
+        "proxy_host": "192.168.1.8",
     }
 
 

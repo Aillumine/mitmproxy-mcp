@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import Body, Depends, FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 
+from mitm_proxy_mcp.control import webui_dir
 from mitm_proxy_mcp.control.capture_context import get_capture_target
 from mitm_proxy_mcp.control.dispatch import (
     UnknownToolError,
@@ -32,6 +35,35 @@ RuntimeReader = Callable[[], RuntimeInfo | None]
 ToolLister = Callable[[], list[str]]
 ProxyStatus = Callable[[], dict[str, Any]]
 CaptureTargetGetter = Callable[[], str]
+ListenIpGetter = Callable[[], str]
+
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "testclient"}
+COOKIE_NAME = "mitm_ui"
+
+_LISTEN_IP: str | None = None
+
+
+def default_listen_ip() -> str:
+    """本机局域网 IP，供设备填写代理；失败则 127.0.0.1。"""
+    global _LISTEN_IP
+    if _LISTEN_IP:
+        return _LISTEN_IP
+    ip = "127.0.0.1"
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        found = sock.getsockname()[0]
+        sock.close()
+        if found and found != "0.0.0.0":
+            ip = found
+    except OSError:
+        pass
+    _LISTEN_IP = ip
+    return ip
+
+
+def _client_host(request: Request) -> str:
+    return (request.client.host if request.client else "") or ""
 
 
 def _error_message(error: Exception) -> str:
@@ -49,19 +81,22 @@ def create_app(
     list_tools: ToolLister = list_tool_names,
     proxy_status: ProxyStatus = proxy_status,
     read_runtime: RuntimeReader = default_read_runtime,
+    get_listen_ip: ListenIpGetter = default_listen_ip,
 ) -> FastAPI:
     """创建使用 Bearer token 认证的本地控制服务。"""
     security = HTTPBearer(auto_error=False)
 
     def require_token(
+        request: Request,
         credentials: HTTPAuthorizationCredentials | None = Depends(security),
+        mitm_ui: str | None = Cookie(default=None),
     ) -> None:
-        if credentials is None or credentials.scheme.lower() != "bearer":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="invalid bearer token",
-            )
-        if credentials.credentials != token:
+        presented = None
+        if credentials is not None and credentials.scheme.lower() == "bearer":
+            presented = credentials.credentials
+        elif mitm_ui:
+            presented = mitm_ui
+        if presented != token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid bearer token",
@@ -75,6 +110,21 @@ def create_app(
         openapi_url=None,
     )
 
+    @app.post("/v1/ui/session")
+    def ui_session(request: Request, response: Response) -> dict[str, bool]:
+        if _client_host(request) not in LOOPBACK_HOSTS:
+            raise HTTPException(status_code=403, detail="loopback only")
+        response.set_cookie(
+            COOKIE_NAME,
+            token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+            max_age=86400,
+            secure=False,
+        )
+        return {"ok": True}
+
     @app.get("/v1/health", dependencies=[Depends(require_token)])
     def health() -> dict[str, Any]:
         return {
@@ -82,6 +132,7 @@ def create_app(
             "version": "1.0.0",
             "proxy_running": bool(proxy_status().get("running", False)),
             "pid": os.getpid(),
+            "proxy_host": get_listen_ip(),
         }
 
     @app.get("/v1/runtime", dependencies=[Depends(require_token)])
@@ -126,5 +177,28 @@ def create_app(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={"success": False, "message": _error_message(error)},
             )
+
+    ui = webui_dir.webui_path()
+    if ui is None:
+        @app.get("/")
+        def no_ui() -> PlainTextResponse:
+            return PlainTextResponse(
+                "Web UI not built. In repo: cd web && npm install && npm run build",
+                status_code=503,
+            )
+    else:
+        @app.get("/")
+        def index() -> FileResponse:
+            return FileResponse(ui / "index.html")
+
+        assets = ui / "assets"
+        if assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets), name="assets")
+
+        @app.get("/{path:path}", response_model=None)
+        def spa(path: str) -> FileResponse | PlainTextResponse:
+            if path.startswith("v1/") or path in {"docs", "redoc", "openapi.json"}:
+                return PlainTextResponse("not found", status_code=404)
+            return FileResponse(ui / "index.html")
 
     return app

@@ -1,12 +1,16 @@
 # MITM Proxy MCP
 
-基于 MCP (Model Context Protocol) 的代理抓包服务，支持 iOS 模拟器，让 AI 助手能够帮你抓取和分析 HTTP/HTTPS 流量。
+基于 MCP (Model Context Protocol) 的代理抓包服务，带本机网页控制台。支持 Android / iOS 真机与模拟器，以及 Mac 本机流量；Cursor 和浏览器都能查看、搜索、Mock HTTP/HTTPS 与 WebSocket。
 
 ## 功能特点
 
-- **抓包**: 捕获 HTTP/HTTPS 流量，支持按域名、状态码、资源类型筛选
-- **智能搜索**: 搜索请求/响应内容，支持大响应分片读取
-- **AI 驱动**: 通过自然语言让 AI 助手帮你分析网络请求
+- **本机网页**：Traffic / Mock / Android / iOS / Proxy，与 MCP 共用 `~/.mitmscope/` 数据库
+- **抓包**：HTTP/HTTPS，按域名、状态码、资源类型筛选；CONNECT 隧道不进列表
+- **WebSocket**：握手记成 `wss://`，后续帧单独入库；Socket.IO 可看 `0{sid}` / 事件；去掉 `permessage-deflate` 以免 App 连不上
+- **分类与预览**：顶栏 HTTP / Socket / HTML / JS / CSS / Image / Media；HTML body 可在原文和渲染之间切换
+- **智能搜索**：搜索请求/响应内容，大响应分片读取
+- **AI 驱动**：用自然语言让助手分析接口、加 Mock
+- **默认不改 Mac 系统代理**：`proxy` / `--proxy` 只听 `8888`，真机请走 adb reverse 或设备 Wi‑Fi
 
 ## 架构
 
@@ -17,20 +21,20 @@
                          └────────┬─────────┘
                                   │ HTTP Bearer
                                   ▼
-                         ┌──────────────────┐     spawn
-                         │ mitmproxy-control│ ──────────► mitmdump
-                         │ ~/.mitmscope/*   │
+┌─────────────┐          ┌──────────────────┐     spawn
+│ 本机浏览器   │ ◄──────► │ mitmproxy-control│ ──────────► mitmdump
+└─────────────┘  cookie  │ ~/.mitmscope/*   │
                          └──────────────────┘
                                   ▲
-                                  │ HTTP/HTTPS
+                                  │ HTTP/HTTPS/WSS
                          ┌────────┴─────────┐
                          │ 模拟器 / 真机 / Mac │
                          └──────────────────┘
 ```
 
 - **MCP 服务**（`mitmproxy-mcp`）：Cursor 通过 stdio 调用；启动时自动探测控制服务，健康则 HTTP 转发，否则 fallback 直调 `tools/*`
-- **控制服务**（`mitmproxy-control`）：本地 FastAPI 服务，管理代理进程与 `~/.mitmscope/` 下的流量/Mock 数据
-- **代理进程**（`mitmproxy-start` / mitmdump）：实际抓包；控制服务模式下由 `proxy_start` 拉起
+- **控制服务**（`mitmproxy-control`）：本地 FastAPI 服务，托管本机网页、管理代理进程与 `~/.mitmscope/` 下的流量/Mock 数据
+- **代理进程**（`mitmproxy-start` / mitmdump）：实际抓包；控制服务模式下由 `proxy_start` 或 `--proxy` 拉起
 
 **Fallback：** 无健康控制服务时，MCP 行为与旧版一致（直调 `tools/*`，默认 `/tmp/*.db`）。
 
@@ -73,6 +77,19 @@ uv run proxy
 
 MCP 自动拉起控制服务时**不会**带 `--open` / `--proxy`，也不会弹出浏览器。在本机网页点「启动」也可以再拉起代理。
 
+**Traffic 页：**
+
+| 能力 | 说明 |
+|------|------|
+| 分类 | 全部 / HTTP / Socket / HTML / JS / CSS / Image / Media |
+| 分组 | 按 `https://host/` 与 `wss://host/` 折叠 |
+| WebSocket | 握手 `GET 101` + 后续 `WS` 帧；Socket.IO 前缀（如 `42[...]`）会格式化里面的 JSON |
+| HTML | Response 可切 **原文** / **HTML**（沙箱渲染，不跑脚本） |
+| 复制 | cURL、接口 path、请求/响应头与参数 |
+| 清空 | 用页面 Clear；**重启代理不会清库** |
+
+图片 / 视频 / 音频走流式转发，列表里仍有 URL，body 可能为空。真机抓包时**不要**勾顶栏 `setup_proxy`。
+
 ### 真机抓包：禁止 Mac 系统代理
 
 真机（Android / iOS）抓包时，**不会也不应**设置 Mac Wi-Fi 系统代理，避免污染本机网络。推荐路径：mitm 只监听 + `android_reverse_proxy` / 设备 Wi-Fi 指向 Mac IP。
@@ -89,6 +106,7 @@ MCP 自动拉起控制服务时**不会**带 `--open` / `--proxy`，也不会弹
 
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv) (Python 包管理器)
+- 改本机网页时需要 Node.js 18+（`cd web && npm run build`）
 
 **安装 uv：**
 
@@ -193,7 +211,7 @@ Cursor 会调用 `proxy_start`，MCP 会自动探测或拉起 `mitmproxy-control
 proxy
 ```
 
-安装脚本会在 `~/.zshrc` 中添加 `proxy` 别名（仅启动 mitmdump，**不带** `--setup-proxy`）。新终端窗口直接可用。
+安装脚本会在 `~/.zshrc` 中添加 `proxy` 别名（`mitmproxy-control --proxy`：网页 + 后台抓包，**不改** Mac 系统代理）。新终端窗口直接可用。
 
 **方式三：手动启动**
 
@@ -364,6 +382,17 @@ uv run mitmproxy-start --setup-proxy
 
 使用 `traffic_search` 搜索关键词定位，然后用 `traffic_read_body` 分片读取。
 
+### Q: 网页里看不到 WSS，或 App 开代理就连不上 WebSocket？
+
+1. **列表是空的**：先确认代理已启动、设备流量能进 `8888`；重启代理**不会**清库，要用页面 Clear 才清空。
+2. **只有心跳 `2`/`3`、没有 `0{sid}`**：旧版本会弄坏 `permessage-deflate`；当前 addon 会去掉该扩展，重启 `proxy` 后再连一次。
+3. **TLS `certificate unknown`**：未 root 的 Android 默认不信任用户 CA，部分 HTTPS/WSS 会失败，这不是过滤把 Socket 藏起来了。
+4. **分类**：WSS 在 **Socket**，不在 HTTP。
+
+### Q: Google Translate 这类 HTML 响应在哪？
+
+顶栏点 **HTML**。详情 Response 里切 **HTML** 可渲染预览，**原文**仍是源码。Content-Type 不是 `text/html` 但 body 是 HTML 片段的，也会归到这一类。
+
 ---
 
 ## 项目结构
@@ -379,9 +408,10 @@ mitmproxy-mcp/
 │       ├── control/          # mitmproxy-control 控制服务
 │       ├── core/             # SQLite 流量/Mock 存储
 │       ├── tools/            # MCP 工具实现
+│       ├── webui/            # 前端构建产物（control 托管）
 │       └── server.py         # MCP 服务入口
 ├── tests/
-├── web/                      # 本机网页（Vite + React）
+├── web/                      # 本机网页源码（Vite + React）
 ├── docs/                     # 文档
 └── resources/                # 资源文件
 ```
@@ -394,8 +424,11 @@ mitmproxy-mcp/
 # 安装开发依赖
 uv sync --extra dev
 
-# 运行测试
+# 运行 Python 测试
 uv run pytest tests/ -v
+
+# 前端（改 web/ 后必须 build，control 读的是 webui/）
+cd web && npm test && npm run build
 
 # 代码格式化
 uv run ruff format .

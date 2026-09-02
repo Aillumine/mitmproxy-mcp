@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { BODY_LIMIT, looksTruncated, prettyJson, prettyLooseJson } from './format';
+import {
+  BODY_LIMIT,
+  bodyChunkCodePointLength,
+  looksTruncated,
+  prettyJson,
+  prettyLooseJson,
+} from './format';
 
 describe('prettyJson', () => {
   it('indents objects', () => {
@@ -59,5 +65,17 @@ describe('looksTruncated', () => {
   });
   it('is false when complete and under the limit', () => {
     expect(looksTruncated(false, BODY_LIMIT - 1)).toBe(false);
+  });
+});
+
+describe('bodyChunkCodePointLength', () => {
+  it('prefers the server length field', () => {
+    expect(bodyChunkCodePointLength({ length: 1, content: '🎀' })).toBe(1);
+  });
+
+  it('counts emoji as one code point when length is omitted', () => {
+    // JS '🎀'.length === 2; code-point length must stay 1 to match Python slicing.
+    expect('🎀'.length).toBe(2);
+    expect(bodyChunkCodePointLength({ content: '🎀hi' })).toBe(3);
   });
 });

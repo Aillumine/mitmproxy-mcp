@@ -4,6 +4,19 @@ export type PrettyJson =
   | { ok: true; text: string; value: unknown; prefix: string }
   | { ok: false; text: string };
 
+/**
+ * traffic_read_body 的 offset/length 按 Unicode 码点计数（与 Python len 一致）。
+ * 不能用 JS 的 string.length：emoji 等非 BMP 字符在 JS 里占 2 个 UTF-16 unit，
+ * 会导致分片错位、JSON 损坏，从而无法格式化。
+ */
+export function bodyChunkCodePointLength(chunk: {
+  length?: number;
+  content?: string;
+}): number {
+  if (typeof chunk.length === 'number') return chunk.length;
+  return [...(chunk.content ?? '')].length;
+}
+
 function indentJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }

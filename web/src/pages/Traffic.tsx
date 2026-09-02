@@ -1,8 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { callTool } from '../api';
 import { HtmlBodyPane } from '../components/HtmlBodyPane';
+import { ImageBodyPane } from '../components/ImageBodyPane';
 import { JsonPane } from '../components/JsonPane';
-import { BODY_LIMIT, looksTruncated } from '../format';
+import { BODY_LIMIT, bodyChunkCodePointLength, looksTruncated } from '../format';
 import {
   drainTraffic,
   mergeTrafficPage,
@@ -18,6 +19,7 @@ import {
   groupTrafficByPrefix,
   isSelectedInRows,
   looksLikeHtml,
+  looksLikeImage,
   parseQueryPairs,
   patchRowFromDetail,
   resolveCopyText,
@@ -27,12 +29,23 @@ import {
   type CopyPayload,
   type TrafficKind,
 } from './trafficState';
+import {
+  activeFilterCount,
+  addPattern,
+  filterTrafficByDisplayRules,
+  hostGlobFromUrl,
+  loadTrafficFilter,
+  removePattern,
+  saveTrafficFilter,
+  type TrafficDisplayFilter,
+} from './trafficFilter';
 
 const POLL_FAST_MS = 1000;
 const POLL_SLOW_MS = 3000;
 const BODY_CHUNK = 4000;
 
 type InspectorTab = 'Summary' | 'Request' | 'Response';
+type PayloadTab = 'Headers' | 'Body';
 
 type DetailRequest = {
   id: string;
@@ -63,6 +76,7 @@ type DetailResult = ToolEnvelope & { request?: DetailRequest };
 type BodyChunk = ToolEnvelope & {
   content?: string;
   has_more?: boolean;
+  length?: number;
 };
 
 type SearchMatch = {
@@ -172,9 +186,11 @@ async function readBodyFull(
     const content = chunk.content ?? '';
     text += content;
     hasMore = Boolean(chunk.has_more);
+    // 必须用服务端码点长度推进 offset；JS string.length 会把 emoji 算成 2，导致分片错位。
+    const step = bodyChunkCodePointLength(chunk);
     if (!hasMore) break;
-    if (content.length === 0) break;
-    offset += content.length;
+    if (step === 0) break;
+    offset += step;
   }
 
   if (text.length > BODY_LIMIT) text = text.slice(0, BODY_LIMIT);
@@ -199,6 +215,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   const [resBody, setResBody] = useState('');
   const [truncated, setTruncated] = useState({ req: false, res: false });
   const [tab, setTab] = useState<InspectorTab>('Response');
+  const [payloadTab, setPayloadTab] = useState<PayloadTab>('Body');
   const [mockById, setMockById] = useState<Record<string, string>>({});
   const [detailMissing, setDetailMissing] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -209,6 +226,10 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     left: number;
   } | null>(null);
   const [kind, setKind] = useState<TrafficKind>('all');
+  const [displayFilter, setDisplayFilter] = useState<TrafficDisplayFilter>(() => loadTrafficFilter());
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterTab, setFilterTab] = useState<'allow' | 'ignore'>('allow');
+  const [patternDraft, setPatternDraft] = useState('');
 
   const afterIdRef = useRef<string | null>(null);
   const generationRef = useRef(0);
@@ -230,7 +251,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
 
   const copyKind = useCallback(async (row: TrafficRow, kind: CopyKind) => {
     let payload: CopyPayload = { method: row.method, url: row.url };
-    if (kind !== 'api') {
+    if (kind !== 'api' && kind !== 'url') {
       try {
         const [detailRes, requestBody, responseBody] = await Promise.all([
           callTool<DetailResult>('traffic_get_detail', { request_id: row.id }),
@@ -270,7 +291,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     const rect = event.currentTarget.getBoundingClientRect();
     const width = 148;
     const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
-    const top = Math.min(rect.bottom + 4, window.innerHeight - 220);
+    const top = Math.min(rect.bottom + 4, window.innerHeight - 260);
     setCopyMenu({ rowId, top, left });
   }
 
@@ -424,6 +445,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     setTruncated({ req: false, res: false });
     setDetailMissing(false);
     setTab('Response');
+    setPayloadTab('Body');
 
     void (async () => {
       try {
@@ -540,9 +562,59 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
         }
       : null;
 
-  const visibleRows = useMemo(() => filterTrafficByKind(rows, kind), [rows, kind]);
-  const kindCounts = useMemo(() => countTrafficByKind(rows), [rows]);
+  function patchDisplayFilter(next: TrafficDisplayFilter) {
+    setDisplayFilter(next);
+    saveTrafficFilter(next);
+  }
+
+  function addCurrentPattern() {
+    const pattern = patternDraft.trim();
+    if (!pattern) return;
+    if (filterTab === 'allow') {
+      patchDisplayFilter({
+        ...displayFilter,
+        allow: addPattern(displayFilter.allow, pattern),
+      });
+    } else {
+      patchDisplayFilter({
+        ...displayFilter,
+        ignore: addPattern(displayFilter.ignore, pattern),
+      });
+    }
+    setPatternDraft('');
+  }
+
+  function quickAllowHost(prefix: string) {
+    const pattern = hostGlobFromUrl(prefix);
+    patchDisplayFilter({
+      ...displayFilter,
+      enabled: true,
+      allow: addPattern(displayFilter.allow, pattern),
+    });
+    setFilterTab('allow');
+  }
+
+  function quickIgnoreHost(prefix: string) {
+    const pattern = hostGlobFromUrl(prefix);
+    patchDisplayFilter({
+      ...displayFilter,
+      enabled: true,
+      ignore: addPattern(displayFilter.ignore, pattern),
+    });
+    setFilterTab('ignore');
+  }
+
+  const displayRows = useMemo(
+    () => filterTrafficByDisplayRules(rows, displayFilter),
+    [rows, displayFilter],
+  );
+  const visibleRows = useMemo(
+    () => filterTrafficByKind(displayRows, kind),
+    [displayRows, kind],
+  );
+  const kindCounts = useMemo(() => countTrafficByKind(displayRows), [displayRows]);
   const groups = useMemo(() => groupTrafficByPrefix(visibleRows), [visibleRows]);
+  const filterRuleCount = activeFilterCount(displayFilter);
   const copyMenuRow =
     copyMenu &&
     (rows.find((item) => item.id === copyMenu.rowId) ??
@@ -554,6 +626,15 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
       headerValue(detail?.response_headers, 'content-type'),
       summary?.type ?? selectedRow?.type,
     );
+  const responseImage = looksLikeImage(
+    summary?.url ?? selectedRow?.url ?? '',
+    headerValue(detail?.response_headers, 'content-type'),
+    summary?.type ?? selectedRow?.type,
+  );
+  const summaryQueryPairs = useMemo(
+    () => (summary?.url ? parseQueryPairs(summary.url) : []),
+    [summary?.url],
+  );
 
   return (
     <div className="traffic">
@@ -587,8 +668,127 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
         <button type="button" onClick={() => void clearTraffic()}>
           Clear
         </button>
-        <span className="muted toolbar-count">{visibleRows.length} 条</span>
+        <button
+          type="button"
+          className={filterOpen || filterRuleCount > 0 ? 'primary' : undefined}
+          aria-expanded={filterOpen}
+          aria-controls="traffic-display-filter"
+          onClick={() => setFilterOpen((open) => !open)}
+        >
+          过滤{filterRuleCount > 0 ? ` ${filterRuleCount}` : ''}
+        </button>
+        <span className="muted toolbar-count">
+          {visibleRows.length}
+          {displayRows.length !== rows.length ? ` / ${rows.length}` : ''} 条
+        </span>
       </div>
+      {filterOpen ? (
+        <div className="traffic-filter-panel" id="traffic-display-filter">
+          <div className="traffic-filter-bar">
+            <label className="traffic-filter-enable">
+              <input
+                type="checkbox"
+                checked={displayFilter.enabled}
+                onChange={(event) =>
+                  patchDisplayFilter({ ...displayFilter, enabled: event.target.checked })
+                }
+              />
+              启用列表过滤（仅隐藏展示，仍入库）
+            </label>
+            <span className="muted">
+              类似 Charles Focus / Proxyman Hide：Allow 非空时只显示匹配项；Ignore 命中则隐藏
+            </span>
+          </div>
+          <div className="payload-tabs" role="tablist" aria-label="Allow or Ignore">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filterTab === 'allow'}
+              className={filterTab === 'allow' ? 'tab active' : 'tab'}
+              onClick={() => setFilterTab('allow')}
+            >
+              只显示 ({displayFilter.allow.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filterTab === 'ignore'}
+              className={filterTab === 'ignore' ? 'tab active' : 'tab'}
+              onClick={() => setFilterTab('ignore')}
+            >
+              忽略 ({displayFilter.ignore.length})
+            </button>
+          </div>
+          <div className="traffic-filter-add">
+            <input
+              className="toolbar-input"
+              type="text"
+              placeholder={
+                filterTab === 'allow'
+                  ? '例如 *.flowgpt.com/*'
+                  : '例如 *googleapis.com* 或 *.facebook.com/*'
+              }
+              value={patternDraft}
+              onChange={(event) => setPatternDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') addCurrentPattern();
+              }}
+              aria-label={filterTab === 'allow' ? 'Allow pattern' : 'Ignore pattern'}
+            />
+            <button type="button" className="primary" onClick={addCurrentPattern}>
+              添加
+            </button>
+            {filterTab === 'allow' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  patchDisplayFilter({
+                    ...displayFilter,
+                    enabled: true,
+                    allow: addPattern(displayFilter.allow, '*.flowgpt.com/*'),
+                  });
+                }}
+              >
+                + flowgpt
+              </button>
+            ) : null}
+          </div>
+          <ul className="traffic-filter-list">
+            {(filterTab === 'allow' ? displayFilter.allow : displayFilter.ignore).length === 0 ? (
+              <li className="muted">
+                {filterTab === 'allow'
+                  ? '暂无规则：Allow 为空时显示全部（再被 Ignore 裁剪）。'
+                  : '暂无忽略规则。'}
+              </li>
+            ) : (
+              (filterTab === 'allow' ? displayFilter.allow : displayFilter.ignore).map((pattern) => (
+                <li key={pattern}>
+                  <code className="mono">{pattern}</code>
+                  <button
+                    type="button"
+                    className="curl-btn"
+                    onClick={() => {
+                      if (filterTab === 'allow') {
+                        patchDisplayFilter({
+                          ...displayFilter,
+                          allow: removePattern(displayFilter.allow, pattern),
+                        });
+                      } else {
+                        patchDisplayFilter({
+                          ...displayFilter,
+                          ignore: removePattern(displayFilter.ignore, pattern),
+                        });
+                      }
+                    }}
+                  >
+                    删除
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      ) : null}
       <div className="traffic-kinds" role="tablist" aria-label="Traffic kind">
         {TRAFFIC_KINDS.map((item) => {
           const count = kindCounts[item.id];
@@ -618,7 +818,11 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                 : '暂无流量。启动代理后发请求即可看到列表。'}
             </p>
           ) : visibleRows.length === 0 ? (
-            <p className="empty-state muted">这一类暂无流量。</p>
+            <p className="empty-state muted">
+              {displayRows.length === 0 && rows.length > 0
+                ? '当前过滤规则下没有流量。可关闭「过滤」或调整 Allow / Ignore。'
+                : '这一类暂无流量。'}
+            </p>
           ) : (
             <table className="traffic-table">
               <thead>
@@ -638,23 +842,43 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                     <Fragment key={group.prefix}>
                       <tr className="traffic-group">
                         <td colSpan={6}>
-                          <button
-                            type="button"
-                            className="traffic-group-toggle"
-                            aria-expanded={!folded}
-                            onClick={() =>
-                              setCollapsed((prev) => ({
-                                ...prev,
-                                [group.prefix]: !prev[group.prefix],
-                              }))
-                            }
-                          >
-                            <span className="group-chevron" aria-hidden="true">
-                              {folded ? '▸' : '▾'}
+                          <div className="traffic-group-row">
+                            <button
+                              type="button"
+                              className="traffic-group-toggle"
+                              aria-expanded={!folded}
+                              onClick={() =>
+                                setCollapsed((prev) => ({
+                                  ...prev,
+                                  [group.prefix]: !prev[group.prefix],
+                                }))
+                              }
+                            >
+                              <span className="group-chevron" aria-hidden="true">
+                                {folded ? '▸' : '▾'}
+                              </span>
+                              <span className="mono url-text">{group.prefix}</span>
+                              <span className="muted">{group.rows.length}</span>
+                            </button>
+                            <span className="traffic-group-actions">
+                              <button
+                                type="button"
+                                className="curl-btn"
+                                title={`只显示 ${hostGlobFromUrl(group.prefix)}`}
+                                onClick={() => quickAllowHost(group.prefix)}
+                              >
+                                只显示
+                              </button>
+                              <button
+                                type="button"
+                                className="curl-btn"
+                                title={`忽略 ${hostGlobFromUrl(group.prefix)}`}
+                                onClick={() => quickIgnoreHost(group.prefix)}
+                              >
+                                忽略
+                              </button>
                             </span>
-                            <span className="mono url-text">{group.prefix}</span>
-                            <span className="muted">{group.rows.length}</span>
-                          </button>
+                          </div>
                         </td>
                       </tr>
                       {folded
@@ -774,6 +998,14 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                     <dt>URL</dt>
                     <dd className="mono">{summary.url}</dd>
                   </div>
+                  {summaryQueryPairs.length > 0 ? (
+                    <div>
+                      <dt>Query</dt>
+                      <dd>
+                        <KvTable pairs={summaryQueryPairs} />
+                      </dd>
+                    </div>
+                  ) : null}
                   <div>
                     <dt>Method</dt>
                     <dd>{summary.method}</dd>
@@ -802,41 +1034,42 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
               ) : null}
               {tab === 'Request' ? (
                 <div className="inspector-body">
-                  <InspectorSection title="Query">
-                    <PairList pairs={parseQueryPairs(summary?.url ?? selectedRow.url)} empty="No query" />
-                  </InspectorSection>
-                  <InspectorSection title="Headers">
-                    <HeaderBlock headers={detail?.request_headers} />
-                  </InspectorSection>
-                  <InspectorSection title="Body">
-                    {reqBody ? (
-                      <JsonPane raw={reqBody} />
-                    ) : (
-                      <p className="muted">
-                        {((summary?.method ?? selectedRow.method) || 'GET').toUpperCase() === 'GET'
-                          ? 'GET 没有 body。查询参数在上方 Query。'
-                          : 'empty'}
-                      </p>
-                    )}
-                  </InspectorSection>
+                  <PayloadTabs value={payloadTab} onChange={setPayloadTab} />
+                  {payloadTab === 'Headers' ? (
+                    <>
+                      <InspectorSection title="Query">
+                        <QueryBlock url={summary?.url ?? selectedRow.url} />
+                      </InspectorSection>
+                      <InspectorSection title="Headers">
+                        <HeaderBlock headers={detail?.request_headers} />
+                      </InspectorSection>
+                    </>
+                  ) : reqBody ? (
+                    <JsonPane raw={reqBody} />
+                  ) : (
+                    <RequestEmptyBody
+                      method={(summary?.method ?? selectedRow.method) || 'GET'}
+                      url={summary?.url ?? selectedRow.url}
+                    />
+                  )}
                 </div>
               ) : null}
               {tab === 'Response' ? (
                 <div className="inspector-body">
-                  <InspectorSection title="Headers">
+                  <PayloadTabs value={payloadTab} onChange={setPayloadTab} />
+                  {payloadTab === 'Headers' ? (
                     <HeaderBlock headers={detail?.response_headers} />
-                  </InspectorSection>
-                  <InspectorSection title="Body">
-                    {resBody ? (
-                      responseHtml ? (
-                        <HtmlBodyPane raw={resBody} />
-                      ) : (
-                        <JsonPane raw={resBody} />
-                      )
+                  ) : responseImage ? (
+                    <ImageBodyPane url={summary?.url ?? selectedRow.url} />
+                  ) : resBody ? (
+                    responseHtml ? (
+                      <HtmlBodyPane raw={resBody} />
                     ) : (
-                      <p className="muted">empty</p>
-                    )}
-                  </InspectorSection>
+                      <JsonPane raw={resBody} />
+                    )
+                  ) : (
+                    <p className="muted">empty</p>
+                  )}
                 </div>
               ) : null}
             </>
@@ -869,6 +1102,31 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   );
 }
 
+function PayloadTabs({
+  value,
+  onChange,
+}: {
+  value: PayloadTab;
+  onChange: (tab: PayloadTab) => void;
+}) {
+  return (
+    <div className="payload-tabs" role="tablist" aria-label="Headers or Body">
+      {(['Headers', 'Body'] as const).map((name) => (
+        <button
+          key={name}
+          type="button"
+          role="tab"
+          aria-selected={value === name}
+          className={value === name ? 'tab active' : 'tab'}
+          onClick={() => onChange(name)}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function InspectorSection({
   title,
   children,
@@ -881,6 +1139,56 @@ function InspectorSection({
       <h3>{title}</h3>
       {children}
     </section>
+  );
+}
+
+function RequestEmptyBody({ method, url }: { method: string; url: string }) {
+  const pairs = parseQueryPairs(url);
+  if (pairs.length > 0) {
+    return (
+      <div className="query-body">
+        <p className="muted query-body-hint">
+          {method.toUpperCase() === 'GET'
+            ? 'GET 没有 body，以下为 URL 查询参数（已解码）：'
+            : '无 request body，以下为 URL 查询参数（已解码）：'}
+        </p>
+        <KvTable pairs={pairs} />
+      </div>
+    );
+  }
+  return (
+    <p className="muted">
+      {method.toUpperCase() === 'GET' ? 'GET 没有 body，也没有查询参数。' : 'empty'}
+    </p>
+  );
+}
+
+function QueryBlock({ url }: { url: string }) {
+  const pairs = parseQueryPairs(url);
+  if (pairs.length === 0) {
+    return <p className="muted">No query</p>;
+  }
+  return <KvTable pairs={pairs} />;
+}
+
+function KvTable({ pairs }: { pairs: { name: string; value: string }[] }) {
+  return (
+    <table className="kv-table">
+      <thead>
+        <tr>
+          <th scope="col">Key</th>
+          <th scope="col">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {pairs.map((pair, index) => (
+          <tr key={`${pair.name}:${index}`}>
+            <td className="kv-key mono">{pair.name}</td>
+            <td className="kv-value mono">{pair.value || '—'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

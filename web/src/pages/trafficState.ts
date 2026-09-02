@@ -243,6 +243,18 @@ export function looksLikeHtml(
   );
 }
 
+/** 图片 body 默认不入库，预览用完整 URL（或 content-type / 扩展名判断）。 */
+export function looksLikeImage(
+  url: string,
+  contentType?: string,
+  resourceType?: string,
+): boolean {
+  if (resourceType === 'Image') return true;
+  const mime = (contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+  if (mime.startsWith('image/')) return true;
+  return trafficKind({ method: 'GET', url, type: resourceType ?? '' }) === 'image';
+}
+
 export function groupTrafficByPrefix(rows: TrafficRow[]): TrafficGroup[] {
   const order: string[] = [];
   const buckets = new Map<string, TrafficRow[]>();
@@ -260,12 +272,13 @@ export function groupTrafficByPrefix(rows: TrafficRow[]): TrafficGroup[] {
 }
 
 export const COPY_MENU_ITEMS = [
+  { id: 'url', label: '完整 URL' },
   { id: 'curl', label: 'cURL' },
   { id: 'api', label: '接口名称' },
   { id: 'reqHeaders', label: '请求头' },
   { id: 'reqParams', label: '请求参数' },
   { id: 'resHeaders', label: '响应头' },
-  { id: 'resParams', label: '响应参数' },
+  { id: 'resParams', label: '响应体' },
 ] as const;
 
 export type CopyKind = (typeof COPY_MENU_ITEMS)[number]['id'];
@@ -307,6 +320,8 @@ export function formatRequestParamsForCopy(url: string, body?: string): string {
 
 export function resolveCopyText(kind: CopyKind, input: CopyPayload): string {
   switch (kind) {
+    case 'url':
+      return input.url || '';
     case 'curl':
       return buildCurlCommand({
         method: input.method,

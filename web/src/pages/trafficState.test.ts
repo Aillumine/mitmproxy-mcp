@@ -9,6 +9,7 @@ import {
   isHttpsConnectTunnel,
   isSelectedInRows,
   looksLikeHtml,
+  looksLikeImage,
   originPrefix,
   parseQueryPairs,
   patchRowFromDetail,
@@ -206,6 +207,7 @@ describe('resolveCopyText', () => {
   };
 
   it('builds curl, api path, headers, and pretty JSON params', () => {
+    expect(resolveCopyText('url', input)).toBe('https://api.example.com/v1/user?lang=en');
     expect(resolveCopyText('api', input)).toBe('/v1/user');
     expect(resolveCopyText('reqHeaders', input)).toBe(
       'Authorization: Bearer tok\nContent-Type: application/json',
@@ -297,5 +299,24 @@ describe('looksLikeHtml', () => {
     expect(looksLikeHtml('42["chatStream",{}]')).toBe(false);
     expect(looksLikeHtml('<p>x</p>', 'text/html; charset=utf-8')).toBe(true);
     expect(looksLikeHtml('<div/>', undefined, 'Document')).toBe(true);
+  });
+});
+
+describe('looksLikeImage', () => {
+  it('detects image by resource type, content-type, or extension', () => {
+    expect(
+      looksLikeImage(
+        'https://image-cdn.flowopt.com/trans-images/a.webp',
+        undefined,
+        'Image',
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeImage('https://cdn.example.com/x', 'image/webp; charset=binary'),
+    ).toBe(true);
+    expect(looksLikeImage('https://cdn.example.com/a.png')).toBe(true);
+    expect(looksLikeImage('https://api.example.com/v1/user', 'application/json')).toBe(
+      false,
+    );
   });
 });

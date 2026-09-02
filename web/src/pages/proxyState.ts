@@ -5,6 +5,43 @@ export const SESSION_401_LIMIT = 3;
 export const SESSION_EXPIRED_MESSAGE = '会话失效，刷新页面';
 export const DEVICE_PROXY_NOTE = '真机禁止系统代理';
 
+export const THROTTLE_PROFILES = ['off', '4g', '3g', '2g'] as const;
+export type ThrottleProfile = (typeof THROTTLE_PROFILES)[number];
+
+export const THROTTLE_LABELS: Record<ThrottleProfile, string> = {
+  off: '关闭',
+  '4g': '4G',
+  '3g': '3G',
+  '2g': '2G',
+};
+
+export type ThrottleInfo = {
+  success?: boolean;
+  profile?: string;
+  label?: string;
+  latency_ms?: number;
+  download_kbps?: number;
+  upload_kbps?: number;
+  enabled?: boolean;
+  message?: string;
+};
+
+export function normalizeThrottleProfile(value: unknown): ThrottleProfile {
+  const key = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return (THROTTLE_PROFILES as readonly string[]).includes(key)
+    ? (key as ThrottleProfile)
+    : 'off';
+}
+
+export function formatThrottleSummary(info: ThrottleInfo | null): string {
+  const profile = normalizeThrottleProfile(info?.profile);
+  if (profile === 'off') return '弱网：关闭';
+  const latency = info?.latency_ms ?? 0;
+  const down = info?.download_kbps ?? 0;
+  const up = info?.upload_kbps ?? 0;
+  return `弱网：${THROTTLE_LABELS[profile]} · ${latency}ms · ↓${down}kbps ↑${up}kbps`;
+}
+
 export type HealthInfo = {
   ok?: boolean;
   proxy_running?: boolean;

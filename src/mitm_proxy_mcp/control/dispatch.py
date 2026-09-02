@@ -56,6 +56,18 @@ async def _call_get_cert_info(arguments: dict[str, Any]) -> dict[str, Any]:
     return await _call_sync("mitm_proxy_mcp.tools.proxy_tools", "get_cert_info")
 
 
+async def _call_throttle_get(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _call_sync("mitm_proxy_mcp.tools.throttle_tools", "throttle_get")
+
+
+async def _call_throttle_set(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _call_sync(
+        "mitm_proxy_mcp.tools.throttle_tools",
+        "throttle_set",
+        profile=arguments["profile"],
+    )
+
+
 async def _call_traffic_list(arguments: dict[str, Any]) -> dict[str, Any]:
     return await _call_sync(
         "mitm_proxy_mcp.tools.traffic_tools",
@@ -299,6 +311,8 @@ TOOL_HANDLERS: dict[str, Handler] = {
     "proxy_start": _call_proxy_start,
     "proxy_stop": _call_proxy_stop,
     "get_cert_info": _call_get_cert_info,
+    "throttle_get": _call_throttle_get,
+    "throttle_set": _call_throttle_set,
     "traffic_list": _call_traffic_list,
     "traffic_get_detail": _call_traffic_get_detail,
     "traffic_search": _call_traffic_search,

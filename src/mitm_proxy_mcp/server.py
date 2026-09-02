@@ -120,6 +120,26 @@ async def list_tools() -> list[Tool]:
             description="获取 CA 证书信息和安装指南。抓取 HTTPS 流量需要在设备上安装此证书。",
             inputSchema={"type": "object", "properties": {}},
         ),
+        Tool(
+            name="throttle_get",
+            description="获取当前弱网模拟档位（关闭 / 4G / 3G / 2G）及延迟、上下行带宽参数。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="throttle_set",
+            description="设置弱网模拟档位。代理运行中立即生效，无需重启。可选 off（关闭）、4g、3g、2g。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "string",
+                        "enum": ["off", "4g", "3g", "2g"],
+                        "description": "弱网档位：off=关闭，4g/3g/2g=对应蜂窝网络模拟",
+                    },
+                },
+                "required": ["profile"],
+            },
+        ),
         # 流量工具
         Tool(
             name="traffic_list",

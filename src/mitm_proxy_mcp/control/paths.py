@@ -37,3 +37,8 @@ def runtime_json_path() -> Path:
 def control_log_path() -> Path:
     """返回控制服务日志路径（~/.mitmscope/control.log）。"""
     return mitmscope_dir() / "control.log"
+
+
+def throttle_json_path() -> Path:
+    """返回弱网配置路径（~/.mitmscope/throttle.json）。"""
+    return mitmscope_dir() / "throttle.json"

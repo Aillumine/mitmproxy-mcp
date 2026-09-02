@@ -31,6 +31,7 @@ from .mock_tools import (
     mock_update,
 )
 from .proxy_tools import get_cert_info, proxy_start, proxy_status, proxy_stop
+from .throttle_tools import throttle_get, throttle_set
 from .traffic_tools import (
     traffic_clear,
     traffic_get_detail,
@@ -45,6 +46,9 @@ __all__ = [
     "proxy_status",
     "proxy_start",
     "proxy_stop",
+    # Throttle tools
+    "throttle_get",
+    "throttle_set",
     # Traffic tools
     "traffic_list",
     "traffic_get_detail",

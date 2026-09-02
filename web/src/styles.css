@@ -859,6 +859,48 @@ button:focus-visible {
   min-height: 0;
 }
 
+.proxy-throttle {
+  padding: 12px 16px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.proxy-throttle-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.proxy-throttle-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.proxy-throttle-summary {
+  margin: 0;
+  color: var(--muted);
+}
+
+.proxy-throttle-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.proxy-throttle-options button {
+  min-width: 64px;
+  padding: 6px 12px;
+}
+
+.proxy-throttle-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .proxy-cert {
   margin: 0;
   padding: 16px;

@@ -394,6 +394,16 @@ def main():
         )
         os.environ["MITMPROXY_DB_PATH"] = str(db_path)
         os.environ["MITMPROXY_MOCK_DB_PATH"] = str(mock_db_path)
+        # 控制服务在跑时弱网配置与 DB 同放 ~/.mitmscope/，否则用默认 /tmp。
+        runtime = read_runtime()
+        if runtime is not None and is_pid_alive(runtime.pid):
+            from mitm_proxy_mcp.control.paths import throttle_json_path
+
+            os.environ["MITMPROXY_THROTTLE_PATH"] = str(throttle_json_path())
+        else:
+            from mitm_proxy_mcp.core.throttle import get_default_path as throttle_default
+
+            os.environ.setdefault("MITMPROXY_THROTTLE_PATH", str(throttle_default()))
 
         logger.opt(colors=True).info(f"    📂 流量保存: <dim>{db_path}</dim>")
         logger.info("")

@@ -27,6 +27,7 @@ MCP 启动时会自动探测或拉起本地控制服务（`mitmproxy-control`）
   - 真机抓包（`capture_target=device`）时**强制禁止** Mac 系统代理，即使传入 `true` 也会被否决
 - `proxy_stop` — 停止代理（参数: port=8888）
 - `proxy_status` — 查看代理状态
+- `throttle_get` / `throttle_set` — 弱网模拟（`off` / `4g` / `3g` / `2g`），运行中立即生效
 
 ### 流量操作
 - `traffic_list` — 列出流量（支持 filter_domain/filter_type/filter_status/filter_url 筛选）

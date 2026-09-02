@@ -12,6 +12,7 @@ def addon(tmp_path, monkeypatch):
     """把 addon 的库路径指到临时目录，避免污染 /tmp 下的真实数据"""
     monkeypatch.setenv("MITMPROXY_DB_PATH", str(tmp_path / "traffic.db"))
     monkeypatch.setenv("MITMPROXY_MOCK_DB_PATH", str(tmp_path / "mock.db"))
+    monkeypatch.setenv("MITMPROXY_THROTTLE_PATH", str(tmp_path / "throttle.json"))
 
     from mitm_proxy_mcp.addon import traffic_addon
 

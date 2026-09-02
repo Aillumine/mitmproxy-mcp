@@ -5,10 +5,12 @@ import {
   DEFAULT_PROXY_PORT,
   DEVICE_PROXY_NOTE,
   formatProxyListen,
+  formatThrottleSummary,
   isDeviceTarget,
   isSessionExpired,
   mergeProxyView,
   nextUnauthorizedStreak,
+  normalizeThrottleProfile,
   resolveHost,
   resolvePort,
   SESSION_401_LIMIT,
@@ -166,5 +168,25 @@ describe('certDisplayText', () => {
     expect(certDisplayText({ success: false, detail: 'oops' })).toBe(
       JSON.stringify({ success: false, detail: 'oops' }, null, 2),
     );
+  });
+});
+
+describe('throttle helpers', () => {
+  it('normalizes known profiles and falls back to off', () => {
+    expect(normalizeThrottleProfile('4G')).toBe('4g');
+    expect(normalizeThrottleProfile('2g')).toBe('2g');
+    expect(normalizeThrottleProfile('wifi')).toBe('off');
+  });
+
+  it('formats summary for off and cellular profiles', () => {
+    expect(formatThrottleSummary({ profile: 'off' })).toBe('弱网：关闭');
+    expect(
+      formatThrottleSummary({
+        profile: '3g',
+        latency_ms: 100,
+        download_kbps: 750,
+        upload_kbps: 250,
+      }),
+    ).toBe('弱网：3G · 100ms · ↓750kbps ↑250kbps');
   });
 });

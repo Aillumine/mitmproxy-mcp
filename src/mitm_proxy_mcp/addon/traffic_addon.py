@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 from mitmproxy import http
 
+from mitm_proxy_mcp.core.throttle import ThrottleConfig, read_config, sleep_for_bytes, sleep_latency
+
 # Paths come from the environment so this module stays importable — and
 # therefore testable — instead of being generated as an f-string at runtime.
 #
@@ -15,12 +17,14 @@ from mitmproxy import http
 # 而不是运行时用 f-string 拼出来。
 DB_PATH = os.environ.get("MITMPROXY_DB_PATH", "/tmp/mitmproxy-traffic.db")
 MOCK_DB_PATH = os.environ.get("MITMPROXY_MOCK_DB_PATH", "/tmp/mitmproxy-mock.db")
+THROTTLE_PATH = os.environ.get("MITMPROXY_THROTTLE_PATH", "/tmp/mitmproxy-throttle.json")
 CAPTURE_BODY_LIMIT = 1_048_576
 _BINARY_MIME_PREFIXES = ("image/", "video/", "audio/", "font/")
 _BINARY_MIMES = {"application/octet-stream", "application/wasm"}
 
 _traffic_conn: sqlite3.Connection | None = None
 _mock_cache: dict = {"mtime": None, "rules": None}
+_throttle_cache: dict = {"mtime": None, "config": ThrottleConfig()}
 
 
 def _get_traffic_conn() -> sqlite3.Connection:
@@ -234,6 +238,54 @@ def increment_mock_hit(rule_id):
     except Exception:
         pass
 
+
+def get_throttle_config() -> ThrottleConfig:
+    """按 throttle.json mtime 缓存弱网配置，切换档位后无需重启代理。"""
+    path = Path(THROTTLE_PATH)
+    if not path.exists():
+        _throttle_cache["mtime"] = None
+        _throttle_cache["config"] = ThrottleConfig()
+        return _throttle_cache["config"]
+    try:
+        mtime = path.stat().st_mtime
+        cached = _throttle_cache.get("config")
+        if cached is None or _throttle_cache.get("mtime") != mtime:
+            config = read_config(path)
+            _throttle_cache["mtime"] = mtime
+            _throttle_cache["config"] = config
+            return config
+        return cached
+    except Exception:
+        return ThrottleConfig()
+
+
+def _throttle_upload(raw) -> None:
+    config = get_throttle_config()
+    if not config.enabled:
+        return
+    sleep_latency(config)
+    if raw:
+        sleep_for_bytes(len(raw), config.upload_bps)
+
+
+def _throttle_download_bytes(nbytes: int) -> None:
+    config = get_throttle_config()
+    if not config.enabled or nbytes <= 0:
+        return
+    sleep_for_bytes(nbytes, config.download_bps)
+
+
+def _throttled_stream(download_bps: float):
+    def stream(chunks):
+        for chunk in chunks:
+            data = chunk or b""
+            if data and download_bps > 0:
+                sleep_for_bytes(len(data), download_bps)
+            yield chunk
+
+    return stream
+
+
 counter = [0]
 
 
@@ -297,6 +349,13 @@ def request(flow):
     if _is_connect_tunnel(flow):
         return
     _strip_websocket_extensions(flow)
+    # 弱网上行：先按带宽「传完」请求体，再叠 RTT 延迟。
+    try:
+        req_raw = flow.request.raw_content or flow.request.content
+    except Exception:
+        req_raw = None
+    _throttle_upload(req_raw)
+
     url = flow.request.pretty_url
     method = flow.request.method
     
@@ -312,6 +371,7 @@ def request(flow):
     headers["X-Mock-Rule"] = mock_rule["id"]
     
     body = (mock_rule.get("response_body", "") or "").encode("utf-8")
+    _throttle_download_bytes(len(body))
     
     flow.response = http.Response.make(
         mock_rule.get("status_code", 200),
@@ -335,8 +395,13 @@ def responseheaders(flow):
         _delete_header_ci(flow.response.headers, "sec-websocket-extensions")
         return
     content_type = _header_ci(res_headers, "content-type")
+    config = get_throttle_config()
     if should_stream_body(content_type, flow.request.pretty_url, req_headers):
-        flow.response.stream = True
+        if config.enabled and config.download_bps > 0:
+            flow.response.stream = _throttled_stream(config.download_bps)
+            flow.metadata["throttle_streamed"] = True
+        else:
+            flow.response.stream = True
 
 
 def response(flow):
@@ -372,6 +437,13 @@ def response(flow):
         )
         res_raw = flow.response.content if store_res else None
         req_raw = flow.request.content if store_req else None
+        # 非流式响应在转发给客户端前按下行带宽限速（流式已在 stream 里限过）。
+        if not flow.metadata.get("throttle_streamed"):
+            try:
+                raw = flow.response.raw_content or flow.response.content or b""
+            except Exception:
+                raw = res_raw or b""
+            _throttle_download_bytes(len(raw) if raw else 0)
         if resource_type in ("Other", "XHR") and looks_like_html(res_raw):
             resource_type = "Document"
         res_body, size = _store_payload(res_headers, res_raw, store_res)
@@ -420,6 +492,10 @@ def websocket_message(flow):
     if len(content) > CAPTURE_BODY_LIMIT:
         content = content[:CAPTURE_BODY_LIMIT]
     from_client = bool(getattr(msg, "from_client", False))
+    config = get_throttle_config()
+    if config.enabled:
+        bps = config.upload_bps if from_client else config.download_bps
+        sleep_for_bytes(len(content), bps)
     req_headers = _flow_headers(getattr(flow.request, "headers", {}) or {})
     url = websocket_url(getattr(flow.request, "pretty_url", "") or "")
     domain = getattr(flow.request, "host", "") or ""

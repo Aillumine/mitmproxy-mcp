@@ -21,6 +21,7 @@ from mitm_proxy_mcp.control.capture_context import get_capture_target
 from mitm_proxy_mcp.control.paths import (
     ensure_mitmscope_dir,
     mock_db_path,
+    throttle_json_path,
     traffic_db_path,
 )
 from mitm_proxy_mcp.control.runtime import (
@@ -115,6 +116,7 @@ def main(argv: list[str] | None = None) -> None:
     mock_db = mock_db_path()
     os.environ["MITMPROXY_DB_PATH"] = str(traffic_db)
     os.environ["MITMPROXY_MOCK_DB_PATH"] = str(mock_db)
+    os.environ["MITMPROXY_THROTTLE_PATH"] = str(throttle_json_path())
 
     port = select_port()
     token = generate_token()

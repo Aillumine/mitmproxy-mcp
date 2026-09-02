@@ -30,6 +30,8 @@ description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口�
 | `proxy_start` | 启动代理 | `port`(默认8888), `setup_proxy`(是否设Mac系统代理) |
 | `proxy_stop` | 停止代理 | `port`(默认8888) |
 | `proxy_status` | 查看代理状态 | 无 |
+| `throttle_get` | 查看弱网档位 | 无 |
+| `throttle_set` | 设置弱网（立即生效） | `profile`: `off` / `4g` / `3g` / `2g` |
 
 ### 流量查看
 

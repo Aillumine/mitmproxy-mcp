@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -79,12 +80,56 @@ def clear_runtime(path: Path | None = None) -> None:
         target.unlink()
 
 
+def is_zombie(pid: int) -> bool:
+    """True when the process has exited but its parent has not reaped it yet.
+
+    进程已退出、父进程还没回收时为 True。
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    state = result.stdout.strip()
+    return bool(state) and state[0] == "Z"
+
+
 def is_pid_alive(pid: int) -> bool:
-    """检查进程是否仍在运行。"""
+    """Whether the process is still running — a zombie does not count.
+
+    signal 0 succeeds against a zombie, which is how a stopped proxy kept
+    reporting itself as running and wedged both proxy_start and proxy_stop.
+
+    进程是否仍在运行——僵尸不算。
+    signal 0 对僵尸进程是成功的，正因如此已停止的代理会一直被判为「还在跑」，
+    把 proxy_start 和 proxy_stop 双双卡死。
+    """
     if pid <= 0:
         return False
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    return not is_zombie(pid)
+
+
+def reap(pid: int) -> None:
+    """Collect an exited child so it stops lingering as a zombie.
+
+    Silently ignored when the process is not our child — the caller may have
+    found the pid via lsof rather than having spawned it.
+
+    回收已退出的子进程，避免它一直挂着变僵尸。
+    若该进程不是本进程的子进程则静默忽略——调用方可能是通过 lsof 找到的 pid，
+    并非自己启动的。
+    """
+    if pid <= 0:
+        return
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass

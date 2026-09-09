@@ -225,9 +225,22 @@ def resolve_db_paths() -> tuple[Path, Path]:
 
 
 def check_port_available(port: int) -> bool:
-    """检查端口是否可用"""
+    """
+    Whether the proxy could bind this port, probed the same way it binds.
+
+    SO_REUSEADDR matters: a device that disconnected leaves sockets in
+    TIME_WAIT / FIN_WAIT_2 on the proxy port, and a plain bind fails on those
+    even though mitmproxy — which does set SO_REUSEADDR — would start fine.
+    Without this the wizard kept refusing to restart right after a stop.
+
+    代理能否绑定该端口，探测方式与它实际绑定时保持一致。
+    SO_REUSEADDR 是关键：设备断开后会在代理端口上留下 TIME_WAIT / FIN_WAIT_2
+    的连接，不带该选项的 bind 会失败，而设置了 SO_REUSEADDR 的 mitmproxy 其实
+    能正常启动。少了这一句，停止后紧接着重启会一直被判为「端口已被占用」。
+    """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("0.0.0.0", port))
         s.close()
         return True

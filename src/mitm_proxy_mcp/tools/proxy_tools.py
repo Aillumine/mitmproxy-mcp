@@ -15,7 +15,7 @@ from typing import IO, Any, NamedTuple
 
 from ..android.cert_injector import CertHelper
 from ..control.capture_context import resolve_setup_proxy
-from ..control.runtime import read_runtime
+from ..control.runtime import is_pid_alive, read_runtime, reap
 from ..core.sqlite_store import SQLiteTrafficStore
 
 # PID 文件路径（用于跟踪代理进程）
@@ -186,21 +186,82 @@ def _save_pid(pid: int) -> None:
 
 
 def _read_pid() -> int | None:
-    """从文件读取进程 PID"""
+    """
+    PID from the pid file, or None when that process is gone.
+
+    A zombie is treated as gone and reaped here: signal 0 succeeds against one,
+    so the stale pid otherwise made proxy_start refuse to start and proxy_stop
+    report that it could not kill anything.
+
+    读取 PID 文件里的进程号，进程已消失时返回 None。
+    僵尸按「已消失」处理并就地回收：signal 0 对僵尸是成功的，否则这个陈旧 pid
+    会让 proxy_start 拒绝启动、proxy_stop 报「无法停止」。
+    """
     try:
-        if PID_FILE.exists():
-            pid = int(PID_FILE.read_text().strip())
-            # 检查进程是否还在运行
-            try:
-                os.kill(pid, 0)  # 发送信号 0 检查进程是否存在
-                return pid
-            except (OSError, ProcessLookupError):
-                # 进程不存在，删除 PID 文件
-                PID_FILE.unlink(missing_ok=True)
-                return None
+        if not PID_FILE.exists():
+            return None
+        pid = int(PID_FILE.read_text().strip())
     except Exception:
-        pass
+        return None
+
+    if is_pid_alive(pid):
+        return pid
+
+    reap(pid)
+    PID_FILE.unlink(missing_ok=True)
     return None
+
+
+def _wait_for_port_release(port: int, timeout: float = 3.0) -> bool:
+    """
+    Block until nothing holds the proxy port, so a stop is safe to follow with a start.
+
+    mitmdump exits a couple of hundred milliseconds after the wrapper script it
+    runs under, so returning as soon as the tracked pid is gone left the port
+    still taken and made an immediate restart fail.
+
+    等到没有进程占着代理端口再返回，好让 stop 之后可以立刻 start。
+    mitmdump 比拉起它的启动脚本晚几百毫秒退出，一旦追踪的 pid 消失就返回，
+    端口还占着，紧接着的重启就会失败。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _find_proxy_process_by_port(port) is None:
+            return True
+        time.sleep(0.1)
+    return _find_proxy_process_by_port(port) is None
+
+
+def _signal_process_tree(pid: int, sig: int) -> None:
+    """
+    Signal the whole process group when the pid leads one.
+
+    The proxy is launched with start_new_session=True, so the wrapper script and
+    the mitmdump it spawns share a group. Signalling only the wrapper orphaned
+    mitmdump, which kept holding port 8888 and blocked the next start. The
+    pgid == pid guard keeps this from ever hitting an unrelated group.
+
+    当 pid 是进程组组长时，对整个进程组发信号。
+    代理以 start_new_session=True 启动，启动脚本和它拉起的 mitmdump 同属一个
+    进程组。只对脚本发信号会让 mitmdump 变成孤儿继续占着 8888 端口，导致下次
+    启动失败。pgid == pid 的判断保证不会误伤无关进程组。
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        pgid = None
+
+    if pgid is not None and pgid == pid:
+        try:
+            os.killpg(pgid, sig)
+            return
+        except OSError:
+            pass
+
+    try:
+        os.kill(pid, sig)
+    except (OSError, ProcessLookupError):
+        pass
 
 
 def _find_proxy_process_by_port(port: int = 8888) -> int | None:
@@ -445,37 +506,41 @@ def proxy_stop(port: int = 8888) -> dict[str, Any]:
             "message": "未找到运行中的代理进程。",
         }
 
+    def _stopped() -> dict[str, Any]:
+        # 回收后再删 PID 文件，否则下次判活会撞上自己留下的僵尸。
+        reap(pid)
+        PID_FILE.unlink(missing_ok=True)
+        _wait_for_port_release(port)
+        return {
+            "success": True,
+            "message": f"代理已停止（PID: {pid}）",
+            "pid": pid,
+        }
+
     try:
-        # 先尝试优雅退出（SIGTERM）
-        os.kill(pid, 15)  # SIGTERM
+        # 先尝试优雅退出（SIGTERM），按进程组发以带走 mitmdump
+        _signal_process_tree(pid, 15)
 
         # 等待进程退出（最多等待 3 秒）
         for _ in range(30):  # 30 * 0.1 = 3 秒
-            try:
-                os.kill(pid, 0)  # 检查进程是否还存在
-            except (OSError, ProcessLookupError):
-                # 进程已退出
-                PID_FILE.unlink(missing_ok=True)
-                return {
-                    "success": True,
-                    "message": f"代理已停止（PID: {pid}）",
-                    "pid": pid,
-                }
+            reap(pid)
+            if not is_pid_alive(pid):
+                return _stopped()
             time.sleep(0.1)
 
         # 如果优雅退出失败，强制终止（SIGKILL）
-        os.kill(pid, 9)  # SIGKILL
+        _signal_process_tree(pid, 9)
         time.sleep(0.5)
+        reap(pid)
 
         # 再次检查
-        try:
-            os.kill(pid, 0)
+        if is_pid_alive(pid):
             return {
                 "success": False,
                 "message": f"无法停止代理进程（PID: {pid}）。请手动终止。",
                 "pid": pid,
             }
-        except (OSError, ProcessLookupError):
+        else:
             PID_FILE.unlink(missing_ok=True)
             return {
                 "success": True,

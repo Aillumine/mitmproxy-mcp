@@ -258,11 +258,26 @@ class SQLiteTrafficStore:
             return None
 
     def clear(self) -> None:
-        """清空所有记录"""
+        """Empty the table and hand the freed pages back to the filesystem.
+
+        DELETE alone only marks pages free, so a database that once held large
+        bodies stays that size forever — one local db had grown to 527 MB while
+        holding 123 rows. VACUUM must run outside a transaction, hence the
+        commit first.
+
+        清空记录并把释放的页还给文件系统。
+        只 DELETE 仅把页标记为空闲，存过大 body 的库会一直维持原来的体积——
+        本地曾出现只有 123 行却占 527MB 的情况。VACUUM 必须在事务外执行，
+        所以先 commit。
+        """
         with self._lock:
             with self._get_conn() as conn:
                 conn.execute("DELETE FROM traffic")
                 conn.commit()
+                try:
+                    conn.execute("VACUUM")
+                except sqlite3.Error:
+                    pass
 
     def __len__(self) -> int:
         """返回当前记录数"""

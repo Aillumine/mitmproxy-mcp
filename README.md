@@ -46,7 +46,7 @@
 |------|------|
 | `traffic.db` | 流量 SQLite 库 |
 | `mock.db` | Mock 规则库 |
-| `throttle.json` | 弱网档位（off / 4g / 3g / 2g） |
+| `throttle.json` | 弱网档位（off / 4g / 3g / 2g），仅对非本机客户端生效 |
 | `runtime.json` | 控制服务运行时信息（含 Bearer token、端口、抓包目标） |
 | `control.log` | 控制服务日志 |
 
@@ -323,7 +323,7 @@ uv run mitmproxy-start --setup-proxy
 | `proxy_stop` | **停止代理服务** |
 | `proxy_status` | 获取代理状态 |
 | `throttle_get` | 获取弱网档位（关闭 / 4G / 3G / 2G）|
-| `throttle_set` | 设置弱网档位（代理运行中立即生效）|
+| `throttle_set` | 设置弱网档位（代理运行中立即生效，**只影响连接的设备，不影响 Mac 本机**）|
 | `traffic_list` | 列出流量（支持域名/状态码/类型筛选）|
 | `traffic_search` | 搜索流量内容（URL/请求头/请求体/响应头/响应体）|
 | `traffic_get_detail` | 获取请求元数据（请求头、响应头等）|

@@ -1,10 +1,19 @@
 """mitmproxy addon 模块测试"""
 
+import asyncio
 import importlib
 import sqlite3
 from unittest.mock import MagicMock
 
 import pytest
+
+
+def run(coro):
+    """addon hooks are coroutines now; drive them to completion in sync tests.
+
+    addon 钩子已改为协程，同步测试里把它跑完。
+    """
+    return asyncio.run(coro)
 
 
 @pytest.fixture
@@ -55,7 +64,7 @@ class TestLooksLikeHtml:
         assert addon.looks_like_html(b'{"ok":true}') is False
 
     def test_plain_html_body_is_stored_as_document(self, addon, tmp_path):
-        addon.response(
+        run(addon.response(
             _http_flow(
                 method="GET",
                 url="https://translate.google.com/m?client=gtx&sl=auto&tl=pt",
@@ -63,7 +72,7 @@ class TestLooksLikeHtml:
                 content=b"<p><em>hello</em></p>",
                 response_headers={"content-type": "text/plain; charset=utf-8"},
             )
-        )
+        ))
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         row = conn.execute("SELECT resource_type FROM traffic").fetchone()
         conn.close()
@@ -189,13 +198,13 @@ class TestSkipConnectTunnels:
     """HTTPS CONNECT 只是建隧道，不应出现在流量列表里"""
 
     def test_response_does_not_record_connect(self, addon, tmp_path):
-        addon.response(
+        run(addon.response(
             _http_flow(
                 method="CONNECT",
                 url="https://api.example.com:443/",
                 host="api.example.com",
             )
-        )
+        ))
 
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         count = conn.execute("SELECT COUNT(*) FROM traffic").fetchone()[0]
@@ -203,14 +212,14 @@ class TestSkipConnectTunnels:
         assert count == 0
 
     def test_response_still_records_get(self, addon, tmp_path):
-        addon.response(
+        run(addon.response(
             _http_flow(
                 method="GET",
                 url="https://api.example.com/v1/user",
                 host="api.example.com",
                 content=b'{"ok":true}',
             )
-        )
+        ))
 
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         rows = conn.execute("SELECT method, url FROM traffic").fetchall()
@@ -254,7 +263,7 @@ class TestSkipConnectTunnels:
             host="api.example.com",
         )
         flow.response = None
-        addon.request(flow)
+        run(addon.request(flow))
         assert flow.response is None
 
 
@@ -275,7 +284,14 @@ class TestCaptureBodyPolicy:
         assert addon.should_stream_body("", "wss://api.example.com/ws", headers) is False
         assert addon.should_store_body("", "wss://api.example.com/ws", headers) is True
 
-    def test_responseheaders_streams_images_only(self, addon):
+    def test_binary_passes_through_text_is_teed_wss_is_buffered(self, addon):
+        """
+        Images pass straight through, text/JSON/SSE are teed (forwarded chunk by
+        chunk while still captured), and a WSS handshake is never streamed.
+
+        图片纯透传；文本 / JSON / SSE 走 tee（逐块转发的同时照样抓下来）；
+        WSS 握手绝不能 stream。
+        """
         image = _http_flow(
             method="GET",
             url="https://cdn.example.com/a.png",
@@ -283,18 +299,23 @@ class TestCaptureBodyPolicy:
             response_headers={"content-type": "image/png", "content-length": "4096"},
         )
         image.response.stream = False
-        addon.responseheaders(image)
+        image.metadata = {}
+        run(addon.responseheaders(image))
         assert image.response.stream is True
+        assert image.metadata.get("capture_body") is None
 
-        api = _http_flow(
-            method="GET",
-            url="https://api.example.com/v1/user",
-            host="api.example.com",
-            response_headers={"content-type": "application/json"},
-        )
-        api.response.stream = False
-        addon.responseheaders(api)
-        assert api.response.stream is False
+        for content_type in ("application/json", "text/html", "text/event-stream"):
+            api = _http_flow(
+                method="GET",
+                url="https://api.example.com/v1/user",
+                host="api.example.com",
+                response_headers={"content-type": content_type},
+            )
+            api.response.stream = False
+            api.metadata = {}
+            run(addon.responseheaders(api))
+            assert callable(api.response.stream), content_type
+            assert api.metadata.get("capture_body") is not None, content_type
 
         ws = _http_flow(
             method="GET",
@@ -303,8 +324,74 @@ class TestCaptureBodyPolicy:
             request_headers={"Upgrade": "websocket"},
         )
         ws.response.stream = False
-        addon.responseheaders(ws)
+        ws.metadata = {}
+        run(addon.responseheaders(ws))
         assert ws.response.stream is False
+
+    def test_teed_body_is_forwarded_immediately_and_still_captured(self, addon):
+        """tee 必须原样放行每个 chunk——缓冲住就是当初 SSE 卡死的原因。"""
+        flow = _http_flow(
+            method="GET",
+            url="https://api.example.com/stream",
+            host="api.example.com",
+            response_headers={"content-type": "text/event-stream"},
+        )
+        flow.metadata = {}
+        run(addon.responseheaders(flow))
+        tee = flow.response.stream
+
+        assert tee(b"data: a\n\n") == b"data: a\n\n"
+        assert tee(b"data: b\n\n") == b"data: b\n\n"
+        assert tee(b"") == b""
+
+        capture = flow.metadata["capture_body"]
+        assert bytes(capture["buf"]) == b"data: a\n\ndata: b\n\n"
+        assert capture["size"] == len(b"data: a\n\ndata: b\n\n")
+
+    def test_teed_body_is_capped_but_size_stays_truthful(self, addon):
+        flow = _http_flow(
+            method="GET",
+            url="https://api.example.com/big",
+            host="api.example.com",
+            response_headers={"content-type": "application/json"},
+        )
+        flow.metadata = {}
+        run(addon.responseheaders(flow))
+        tee = flow.response.stream
+
+        chunk = b"x" * 700_000
+        for _ in range(3):
+            assert tee(chunk) == chunk
+
+        capture = flow.metadata["capture_body"]
+        assert len(capture["buf"]) == addon.CAPTURE_BODY_LIMIT
+        assert capture["size"] == 2_100_000
+        assert capture["truncated"] is True
+
+    def test_teed_gzip_body_is_decoded_before_storage(self, addon, tmp_path):
+        """tee 拿到的是压缩后的字节，入库前要解开，否则详情页看到乱码。"""
+        import gzip
+
+        payload = b'{"ok":true}'
+        flow = _http_flow(
+            method="GET",
+            url="https://api.example.com/v1/user",
+            host="api.example.com",
+            response_headers={
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+            },
+        )
+        flow.metadata = {}
+        run(addon.responseheaders(flow))
+        flow.response.stream(gzip.compress(payload))
+        flow.response.stream(b"")
+        run(addon.response(flow))
+
+        conn = sqlite3.connect(str(tmp_path / "traffic.db"))
+        row = conn.execute("SELECT response_body FROM traffic").fetchone()
+        conn.close()
+        assert row[0] == payload
 
     def test_image_record_skips_blob_but_keeps_metadata(self, addon, tmp_path):
         class Guard:
@@ -324,7 +411,7 @@ class TestCaptureBodyPolicy:
             host="cdn.example.com",
         )
         flow.response = Guard()
-        addon.response(flow)
+        run(addon.response(flow))
 
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         row = conn.execute(
@@ -338,7 +425,7 @@ class TestCaptureBodyPolicy:
         assert row[4] in (None, b"")
 
     def test_json_record_still_stores_body(self, addon, tmp_path):
-        addon.response(
+        run(addon.response(
             _http_flow(
                 method="POST",
                 url="https://api.example.com/prompt/v2/filter",
@@ -346,7 +433,7 @@ class TestCaptureBodyPolicy:
                 content=b'{"ok":true}',
                 response_headers={"content-type": "application/json"},
             )
-        )
+        ))
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         row = conn.execute("SELECT response_body FROM traffic").fetchone()
         conn.close()
@@ -362,7 +449,7 @@ class TestWebsocketCapture:
         ) == "wss://staging-ws-flow-dev.flowgpt.com/socket.io/?EIO=4&transport=websocket"
 
     def test_handshake_is_stored_as_wss(self, addon, tmp_path):
-        addon.response(
+        run(addon.response(
             _http_flow(
                 method="GET",
                 url="https://staging-ws-flow-dev.flowgpt.com/socket.io/?EIO=4&transport=websocket",
@@ -371,7 +458,7 @@ class TestWebsocketCapture:
                 request_headers={"Upgrade": "websocket"},
                 response_headers={"Upgrade": "websocket"},
             )
-        )
+        ))
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         row = conn.execute("SELECT method, url, status, resource_type FROM traffic").fetchone()
         conn.close()
@@ -399,9 +486,9 @@ class TestWebsocketCapture:
 
         flow.websocket = Ws()
         flow.websocket.messages = [Msg(True, b"40")]
-        addon.websocket_message(flow)
+        run(addon.websocket_message(flow))
         flow.websocket.messages = [Msg(True, b"40"), Msg(False, b'0{"sid":"abc"}')]
-        addon.websocket_message(flow)
+        run(addon.websocket_message(flow))
 
         conn = sqlite3.connect(str(tmp_path / "traffic.db"))
         rows = conn.execute(
@@ -428,7 +515,108 @@ class TestWebsocketCapture:
             },
         )
         flow.response = None
-        addon.request(flow)
+        run(addon.request(flow))
         assert flow.response is None
         keys = {str(key).lower() for key in flow.request.headers}
         assert "sec-websocket-extensions" not in keys
+
+
+class TestTrafficRetention:
+    """addon 直写 sqlite，之前没有任何行数上限，库会无限膨胀。"""
+
+    def _seed(self, addon, rows: int) -> None:
+        conn = addon._get_traffic_conn()
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO traffic (
+                id, timestamp, method, url, domain, status, resource_type,
+                size, time_ms, request_headers, request_body,
+                request_body_size, response_headers, response_body, error
+            ) VALUES (?, ?, 'GET', 'https://e.com/x', 'e.com', 200, 'XHR',
+                      0, 0.0, '{}', NULL, 0, '{}', NULL, NULL)
+            """,
+            [(f"seed-{i}", float(i)) for i in range(rows)],
+        )
+        conn.commit()
+
+    def test_prune_only_runs_every_prune_every_inserts(self, addon):
+        """COUNT(*) 不能每条流都跑一次，否则开销落在代理事件循环上。"""
+        self._seed(addon, addon.MAX_TRAFFIC_ROWS + 50)
+        conn = addon._get_traffic_conn()
+
+        for _ in range(addon.PRUNE_EVERY - 1):
+            addon._prune_traffic(conn)
+        assert conn.execute("SELECT COUNT(*) FROM traffic").fetchone()[0] == (
+            addon.MAX_TRAFFIC_ROWS + 50
+        )
+
+        addon._prune_traffic(conn)
+        assert conn.execute("SELECT COUNT(*) FROM traffic").fetchone()[0] == (
+            addon.MAX_TRAFFIC_ROWS
+        )
+
+    def test_prune_drops_the_oldest_rows_first(self, addon):
+        self._seed(addon, addon.MAX_TRAFFIC_ROWS + 10)
+        conn = addon._get_traffic_conn()
+        addon._since_prune[0] = addon.PRUNE_EVERY - 1
+        addon._prune_traffic(conn)
+
+        oldest = conn.execute("SELECT MIN(timestamp) FROM traffic").fetchone()[0]
+        assert oldest == 10.0
+
+    def test_prune_keeps_everything_under_the_cap(self, addon):
+        self._seed(addon, 10)
+        conn = addon._get_traffic_conn()
+        addon._since_prune[0] = addon.PRUNE_EVERY - 1
+        addon._prune_traffic(conn)
+        assert conn.execute("SELECT COUNT(*) FROM traffic").fetchone()[0] == 10
+
+
+def test_single_oversized_chunk_marks_truncated(addon):
+    """一个 chunk 就超限时也要标记截断，不能只认「已装满」的情况。"""
+    flow = _http_flow(
+        method="GET",
+        url="https://api.example.com/big",
+        host="api.example.com",
+        response_headers={"content-type": "application/json"},
+    )
+    flow.metadata = {}
+    run(addon.responseheaders(flow))
+    tee = flow.response.stream
+
+    huge = b"y" * (addon.CAPTURE_BODY_LIMIT + 1)
+    assert tee(huge) == huge
+    capture = flow.metadata["capture_body"]
+    assert capture["truncated"] is True
+    assert len(capture["buf"]) == addon.CAPTURE_BODY_LIMIT
+    assert capture["size"] == addon.CAPTURE_BODY_LIMIT + 1
+
+
+def test_mock_response_body_is_stored_even_though_tee_never_runs(addon, tmp_path):
+    """
+    mitmproxy only emulates responseheaders for an addon-set response and then
+    sends it directly, so the tee callback never fires. The record must still
+    carry the mock body rather than the untouched empty buffer.
+
+    mitmproxy 对 addon 生成的响应只是「模拟」触发 responseheaders，随后直接发出，
+    tee 回调不会被调用。记录里必须是 mock 的 body，而不是那个没被写过的空缓冲。
+    """
+    body = b'{"mocked":true}'
+    flow = _http_flow(
+        method="GET",
+        url="https://api.example.com/v1/user",
+        host="api.example.com",
+        status=201,
+        content=body,
+        response_headers={"content-type": "application/json"},
+    )
+    flow.metadata = {}
+    run(addon.responseheaders(flow))
+    assert callable(flow.response.stream)
+    run(addon.response(flow))
+
+    conn = sqlite3.connect(str(tmp_path / "traffic.db"))
+    row = conn.execute("SELECT status, response_body FROM traffic").fetchone()
+    conn.close()
+    assert row[0] == 201
+    assert row[1] == body

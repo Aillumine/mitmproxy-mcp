@@ -125,15 +125,40 @@ def set_profile(profile: str, path: Path | str | None = None) -> ThrottleConfig:
     return config
 
 
+def latency_seconds(config: ThrottleConfig) -> float:
+    """RTT delay in seconds, 0 when the profile carries no latency.
+
+    RTT 延迟（秒），档位没有配延迟时返回 0。
+    """
+    return config.latency_ms / 1000.0 if config.latency_ms > 0 else 0.0
+
+
+def seconds_for_bytes(nbytes: int, bps: float) -> float:
+    """Seconds it takes to move `nbytes` at `bps`, 0 when unthrottled.
+
+    以 `bps` 传输 `nbytes` 所需的秒数；不限速时返回 0。
+    """
+    if bps <= 0 or nbytes <= 0:
+        return 0.0
+    return nbytes / bps
+
+
+# Callers on mitmproxy's event loop must await asyncio.sleep() instead: a
+# blocking sleep here freezes every other connection, including the Mac's own.
+# These sync helpers remain for scripts and tests that run off the loop.
+#
+# 跑在 mitmproxy 事件循环上的调用方必须改用 await asyncio.sleep()：这里的阻塞
+# sleep 会冻住所有其他连接（包括 Mac 自己的）。同步版本仅留给循环外的脚本和测试。
 def sleep_latency(config: ThrottleConfig) -> None:
-    if config.latency_ms > 0:
-        time.sleep(config.latency_ms / 1000.0)
+    delay = latency_seconds(config)
+    if delay > 0:
+        time.sleep(delay)
 
 
 def sleep_for_bytes(nbytes: int, bps: float) -> None:
-    if bps <= 0 or nbytes <= 0:
-        return
-    time.sleep(nbytes / bps)
+    delay = seconds_for_bytes(nbytes, bps)
+    if delay > 0:
+        time.sleep(delay)
 
 
 def list_profiles() -> list[dict[str, Any]]:

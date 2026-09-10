@@ -256,3 +256,43 @@ class TestWaitForPortRelease:
             if holder.poll() is None:
                 holder.kill()
             holder.wait()
+
+
+class TestDetachedLaunch:
+    def test_stdin_is_detached(self, monkeypatch, tmp_path):
+        """
+        继承 stdin 会让启动向导卡在 input() 上永不退出，留下残留进程。
+        """
+        captured: dict = {}
+
+        class FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured.update(kwargs)
+                self.pid = 4242
+
+        monkeypatch.setattr(proxy_tools.subprocess, "Popen", FakePopen)
+
+        proxy_tools._popen_detached(["echo", "hi"], tmp_path)
+
+        assert captured["stdin"] is proxy_tools.subprocess.DEVNULL
+        assert captured["stdout"] is proxy_tools.subprocess.DEVNULL
+        assert captured["start_new_session"] is True
+
+    def test_wizard_exits_instead_of_hanging_without_stdin(self, tmp_path):
+        """真实验证：端口被占时向导必须直接退出，而不是挂在 input() 上。"""
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("0.0.0.0", 0))
+        port = listener.getsockname()[1]
+        listener.listen(1)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "mitm_proxy_mcp.cli.start", "--port", str(port)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            assert proc.wait(timeout=20) != 0, "端口被占用时不应成功启动"
+        finally:
+            listener.close()

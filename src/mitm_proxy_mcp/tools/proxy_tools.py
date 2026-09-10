@@ -93,6 +93,19 @@ def _launch_in_mac_terminal(cmd: list[str], cwd: Path | None) -> None:
 
 
 def _popen_detached(cmd: list[str], project_root: Path | None) -> ProxyLaunch:
+    """
+    Launch the proxy in the background with no usable stdin.
+
+    An inherited stdin left the start wizard blocked forever on its "kill the
+    process holding the port?" input() — the launch reported a timeout while the
+    process stayed alive as a stray. With DEVNULL that input() raises EOFError,
+    which the wizard already handles by exiting.
+
+    后台启动代理，并且不给它可用的 stdin。
+    继承 stdin 会让启动向导永远卡在「是否关闭占用端口的进程？」的 input() 上——
+    启动这边报超时，进程却还活着变成残留。改成 DEVNULL 后 input() 抛 EOFError，
+    向导本来就有对应的退出分支。
+    """
     import tempfile
 
     stderr_file = tempfile.NamedTemporaryFile(
@@ -103,6 +116,7 @@ def _popen_detached(cmd: list[str], project_root: Path | None) -> ProxyLaunch:
     stderr_fd = open(stderr_path, "w")
 
     popen_kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": stderr_fd,
         "start_new_session": True,

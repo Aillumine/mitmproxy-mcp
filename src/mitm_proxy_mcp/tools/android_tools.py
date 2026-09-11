@@ -680,12 +680,12 @@ async def android_list_packages(serial: str) -> dict[str, Any]:
         {"success": bool, "packages": [...], "count": int}
         packages 元素：{"package": 包名, "uid": uid, "foreground": 是否前台}
     """
+    # ponytail: package name only, no display label — adb cannot read it and the
+    # only route is pulling the APK for aapt2. Add that here if labels matter.
+    #
     # ponytail: 只给包名，不给应用中文名。adb 没有读 label 的命令，唯一办法是
     # pull 出 APK 再用 aapt2 解析，几十 MB 换一个名字不值。真需要中文名时，
     # 在这里加「pm path <pkg> → adb pull → aapt2 dump badging」。
-    #
-    # ponytail: package name only, no display label — adb cannot read it and the
-    # only route is pulling the APK for aapt2. Add that here if labels matter.
     try:
         adb = _get_adb()
         code, listing = await adb.shell(serial, "pm list packages -3 -U")
@@ -698,7 +698,17 @@ async def android_list_packages(serial: str) -> dict[str, Any]:
             }
 
         uids = parse_package_uids(listing)
-        _, window_dump = await adb.shell(serial, "dumpsys window | grep mCurrentFocus")
+        # mCurrentFocus lands on NotificationShade whenever the lock screen or the
+        # notification shade is up — a very common state when the user hands the
+        # phone back to the computer. mFocusedApp still names the real foreground
+        # app then, so grep both and let parse_foreground_package fall back.
+        #
+        # 锁屏或下拉通知栏时 mCurrentFocus 会落在 NotificationShade 上——用户把
+        # 手机操作完切回电脑时经常正处于这个状态。这时 mFocusedApp 仍然指向
+        # 真正的前台应用，所以两行都抓，交给 parse_foreground_package 做兜底。
+        _, window_dump = await adb.shell(
+            serial, "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"
+        )
         foreground = parse_foreground_package(window_dump)
 
         # Attribution needs only the uid, which the listing already gave us, so

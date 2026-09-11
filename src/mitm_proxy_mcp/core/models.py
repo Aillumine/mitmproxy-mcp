@@ -47,6 +47,10 @@ class TrafficRecord:
     # 额外元数据
     error: str | None = None  # 如果请求失败，记录错误信息
 
+    # 按应用归属用：客户端源端口，以及回填出来的包名
+    client_port: int | None = None
+    package: str | None = None
+
     def to_summary(self) -> dict[str, Any]:
         """
         转换为摘要格式（用于列表展示，不含 Body）
@@ -64,6 +68,7 @@ class TrafficRecord:
             "size": self.size,
             "time": self.time_ms,
             "error": self.error,
+            "package": self.package,
         }
 
     def to_detail(self) -> dict[str, Any]:

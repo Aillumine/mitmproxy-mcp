@@ -7,6 +7,7 @@ import time
 import zlib
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from mitmproxy import http
@@ -80,9 +81,20 @@ def init_db():
             response_headers TEXT,
             response_body BLOB,
             timing TEXT,
-            error TEXT
+            error TEXT,
+            client_port INTEGER,
+            package TEXT
         )
     """)
+    # Same migration as core/sqlite_store.py — the addon runs in its own process
+    # and opens the DB first, so it must be able to upgrade an old file too.
+    #
+    # 与 core/sqlite_store.py 同样的迁移——addon 是独立进程且先打开数据库，
+    # 所以它也必须能升级老文件。
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(traffic)")}
+    for name, sql_type in (("client_port", "INTEGER"), ("package", "TEXT")):
+        if name not in existing:
+            conn.execute(f"ALTER TABLE traffic ADD COLUMN {name} {sql_type}")
     conn.commit()
 
 
@@ -300,6 +312,28 @@ def client_ip(flow) -> str:
     if isinstance(host, bytes):
         host = host.decode("utf-8", "ignore")
     return str(host or "")
+
+
+def client_port(flow) -> int | None:
+    """Source port of the client connection, None when unavailable.
+
+    This is the join key for per-package attribution: the same number shows up in
+    the device's /proc/net/tcp as that app's local port.
+
+    发起这条流的客户端源端口，取不到时返回 None。
+
+    它是按应用归属的关联键：同一个数字会出现在设备 /proc/net/tcp 里，
+    作为那个应用的本地端口。
+    """
+    conn = getattr(flow, "client_conn", None)
+    peername = getattr(conn, "peername", None)
+    if not peername:
+        return None
+    try:
+        port = peername[1]
+    except (TypeError, IndexError):
+        return None
+    return int(port) if isinstance(port, int) else None
 
 
 def is_device_client(flow) -> bool:
@@ -710,8 +744,9 @@ async def response(flow):
             INSERT OR REPLACE INTO traffic (
                 id, timestamp, method, url, domain, status,
                 resource_type, size, time_ms, request_headers,
-                request_body, request_body_size, response_headers, response_body, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                request_body, request_body_size, response_headers, response_body, error,
+                client_port
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             record_id,
             time.time(),
@@ -727,7 +762,8 @@ async def response(flow):
             req_size,
             json.dumps(res_headers),
             res_body,
-            None
+            None,
+            client_port(flow),
         ))
         conn.commit()
         _prune_traffic(conn)
@@ -764,8 +800,9 @@ async def websocket_message(flow):
             INSERT OR REPLACE INTO traffic (
                 id, timestamp, method, url, domain, status,
                 resource_type, size, time_ms, request_headers,
-                request_body, request_body_size, response_headers, response_body, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                request_body, request_body_size, response_headers, response_body, error,
+                client_port
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"ws-{counter[0]}",
@@ -783,6 +820,7 @@ async def websocket_message(flow):
                 "{}",
                 None if from_client else content,
                 None,
+                client_port(flow),
             ),
         )
         conn.commit()
@@ -819,14 +857,22 @@ def tls_failed_client(data):
         counter[0] += 1
         record_id = f"tls-{counter[0]}"
 
+        # No http flow exists on a failed handshake, only the raw client connection —
+        # wrap it so client_port() can read .client_conn.peername like elsewhere.
+        #
+        # 握手失败时没有 http flow，只有原始的客户端连接对象——
+        # 包一层伪 flow，让 client_port() 能像别处一样读 .client_conn.peername。
+        pseudo_flow = SimpleNamespace(client_conn=conn_obj)
+
         conn = _get_traffic_conn()
         conn.execute(
             """
             INSERT OR REPLACE INTO traffic (
                 id, timestamp, method, url, domain, status, resource_type,
                 size, time_ms, request_headers, request_body,
-                request_body_size, response_headers, response_body, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                request_body_size, response_headers, response_body, error,
+                client_port
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -844,6 +890,7 @@ def tls_failed_client(data):
                 "{}",
                 None,
                 str(error),
+                client_port(pseudo_flow),
             ),
         )
         conn.commit()

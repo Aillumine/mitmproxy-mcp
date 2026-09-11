@@ -16,6 +16,21 @@ from .models import TrafficRecord
 # 默认数据库路径
 DEFAULT_DB_PATH = Path("/tmp/mitmproxy-traffic.db")
 
+# SQLite has no migration framework here, and an existing ~/.mitmscope DB predates
+# these columns. ALTER TABLE is the whole migration — adding a nullable column is
+# instant and safe to run on every startup.
+#
+# 这里没有迁移框架，而用户已有的 ~/.mitmscope 数据库建于这两列之前。
+# 迁移就是一句 ALTER TABLE——加可空列是瞬时操作，每次启动跑一遍也无妨。
+_ATTRIBUTION_COLUMNS = {"client_port": "INTEGER", "package": "TEXT"}
+
+
+def _migrate_attribution_columns(conn) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(traffic)")}
+    for name, sql_type in _ATTRIBUTION_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE traffic ADD COLUMN {name} {sql_type}")
+
 
 class SQLiteTrafficStore:
     """
@@ -67,6 +82,8 @@ class SQLiteTrafficStore:
                     response_body BLOB,
                     timing TEXT,
                     error TEXT,
+                    client_port INTEGER,
+                    package TEXT,
                     created_at REAL DEFAULT (strftime('%s', 'now'))
                 )
             """)
@@ -79,6 +96,7 @@ class SQLiteTrafficStore:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_status ON traffic(status)
             """)
+            _migrate_attribution_columns(conn)
             conn.commit()
 
     def add(self, record: TrafficRecord) -> None:

@@ -187,10 +187,10 @@ async def test_attributor_survives_a_broken_database(tmp_path):
     """
     from mitm_proxy_mcp.android.attribution import PackageAttributor
 
-    # 指向一个不存在的目录：sqlite3.connect 会抛 OperationalError。
-    #
     # Points at a directory that was never created: sqlite3.connect raises
     # OperationalError.
+    #
+    # 指向一个不存在的目录：sqlite3.connect 会抛 OperationalError。
     db = tmp_path / "no-such-dir" / "traffic.db"
 
     class FakeAdb:

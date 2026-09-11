@@ -458,7 +458,7 @@ git commit -m "feat: parse local ports from /proc/net/tcp dumps"
 - Test: `tests/test_android_packages.py`
 
 **Interfaces:**
-- Consumes: `AdbClient.shell(serial, command) -> tuple[int, str]`（`src/mitm_proxy_mcp/android/adb_client.py:159`）
+- Consumes: `ADBClient.shell(serial, command) -> tuple[int, str]`（`src/mitm_proxy_mcp/android/adb_client.py:159`）
 - Produces:
   - `parse_package_uids(text: str) -> dict[str, int]`
   - `parse_foreground_package(text: str) -> str | None`
@@ -772,7 +772,7 @@ git commit -m "feat: list device packages with uid and attribution capability"
 **Interfaces:**
 - Consumes:
   - `parse_local_ports(text, uid=None) -> set[int]`（Task 2）
-  - `AdbClient.shell(serial, command) -> tuple[int, str]`
+  - `ADBClient.shell(serial, command) -> tuple[int, str]`
   - `traffic` 表的 `client_port` / `package` 列（Task 1）
 - Produces:
   - `SAMPLE_INTERVAL_SECONDS = 1.0`、`BACKFILL_WINDOW_SECONDS = 30.0`
@@ -890,11 +890,11 @@ from loguru import logger
 
 from mitm_proxy_mcp.android.proc_net import parse_local_ports
 
-# 采样间隔与回填窗口。窗口不能太长：系统会复用端口，超过窗口的老记录再认领
-# 就可能把别的应用的请求算到自己头上。
-#
 # Sampling interval and backfill window. The window must stay short: the OS
 # reuses ports, so claiming rows older than this risks stealing another app's.
+#
+# 采样间隔与回填窗口。窗口不能太长：系统会复用端口，超过窗口的老记录再认领
+# 就可能把别的应用的请求算到自己头上。
 SAMPLE_INTERVAL_SECONDS = 1.0
 BACKFILL_WINDOW_SECONDS = 30.0
 
@@ -1095,10 +1095,10 @@ class PackageAttributor:
             self._last_error = output.strip()[:200]
             return 0
 
-        # 表里是全设备的连接，必须按目标应用的 uid 收窄。
-        #
         # The dump covers every app on the device, so narrowing by the target
         # uid is what makes the result belong to this package.
+        #
+        # 表里是全设备的连接，必须按目标应用的 uid 收窄。
         ports = parse_local_ports(output, uid=self.uid)
         self._samples += 1
         self._last_error = None
@@ -1327,19 +1327,19 @@ Create `src/mitm_proxy_mcp/tools/attribution_tools.py`：
 from pathlib import Path
 from typing import Any
 
-from ..android.adb_client import AdbClient
+from ..android.adb_client import ADBClient
 from ..android.attribution import PackageAttributor
 from ..core.sqlite_store import SQLiteTrafficStore
 from .android_tools import android_list_packages
 
-# 同一时刻只归属一个应用，和界面上「选中一个包名」一一对应。
-#
 # One app at a time, mirroring the single selected package in the UI.
+#
+# 同一时刻只归属一个应用，和界面上「选中一个包名」一一对应。
 _attributor: PackageAttributor | None = None
 
 
-def _get_adb() -> AdbClient:
-    return AdbClient()
+def _get_adb() -> ADBClient:
+    return ADBClient()
 
 
 def _db_path() -> Path:

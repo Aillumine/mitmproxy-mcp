@@ -567,11 +567,9 @@ button:focus-visible {
 .inspector {
   display: flex;
   flex-direction: column;
-  width: 440px;
   flex-shrink: 0;
   overflow: auto;
   background: var(--bg-1);
-  border-left: 1px solid var(--line);
 }
 
 .inspector-tabs {
@@ -970,4 +968,26 @@ button:focus-visible {
   padding: 12px;
   min-height: 0;
   overflow: auto;
+}
+
+.split-handle {
+  flex-shrink: 0;
+  width: 5px;
+  cursor: col-resize;
+  background: var(--line);
+}
+
+.split-handle:hover,
+body.resizing-split .split-handle {
+  background: var(--accent);
+}
+
+body.resizing-split {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.json-pane.mod-held .cm-url:hover {
+  cursor: pointer;
+  text-decoration: underline;
 }

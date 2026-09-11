@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TrafficRow } from '../poll/drainTraffic';
 import {
+  applyPattern,
   addPattern,
   filterTrafficByDisplayRules,
   hostGlobFromUrl,
@@ -121,5 +122,27 @@ describe('parseStoredTrafficFilter', () => {
       allow: ['*.flowgpt.com/*'],
       ignore: [],
     });
+  });
+});
+
+describe('applyPattern', () => {
+  const base = { enabled: true, allow: ['*.a.com/*'], ignore: ['*.b.com/*'] };
+
+  it('moves a pattern from ignore to allow', () => {
+    const next = applyPattern(base, 'allow', '*.b.com/*');
+    expect(next.allow).toEqual(['*.a.com/*', '*.b.com/*']);
+    expect(next.ignore).toEqual([]);
+  });
+
+  it('moves a pattern from allow to ignore', () => {
+    const next = applyPattern(base, 'ignore', '*.a.com/*');
+    expect(next.allow).toEqual([]);
+    expect(next.ignore).toEqual(['*.b.com/*', '*.a.com/*']);
+  });
+
+  it('leaves the other side alone for a new pattern', () => {
+    const next = applyPattern(base, 'allow', '*.c.com/*');
+    expect(next.allow).toEqual(['*.a.com/*', '*.c.com/*']);
+    expect(next.ignore).toEqual(['*.b.com/*']);
   });
 });

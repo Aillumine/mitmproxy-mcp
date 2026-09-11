@@ -341,3 +341,16 @@ export function resolveCopyText(kind: CopyKind, input: CopyPayload): string {
       return prettyMaybeJson(input.responseBody ?? '');
   }
 }
+
+// Inspector keeps its 440px default as the floor and always leaves the list at
+// least 360px, so dragging the split handle can never collapse either side.
+//
+// 右侧详情面板以默认 440px 为最小宽度，并始终给左侧列表留 360px，
+// 保证拖动分隔条时两边都不会被拖没。
+export const INSPECTOR_MIN_WIDTH = 440;
+export const LIST_MIN_WIDTH = 360;
+
+export function clampInspectorWidth(desired: number, containerWidth: number): number {
+  const max = Math.max(INSPECTOR_MIN_WIDTH, containerWidth - LIST_MIN_WIDTH);
+  return Math.min(max, Math.max(INSPECTOR_MIN_WIDTH, desired));
+}

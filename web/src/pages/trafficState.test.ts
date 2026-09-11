@@ -3,6 +3,7 @@ import type { TrafficRow } from '../poll/drainTraffic';
 import {
   apiPath,
   buildCurlCommand,
+  clampInspectorWidth,
   countTrafficByKind,
   filterTrafficByKind,
   groupTrafficByPrefix,
@@ -318,5 +319,23 @@ describe('looksLikeImage', () => {
     expect(looksLikeImage('https://api.example.com/v1/user', 'application/json')).toBe(
       false,
     );
+  });
+});
+
+describe('clampInspectorWidth', () => {
+  it('never goes below the default width', () => {
+    expect(clampInspectorWidth(100, 1600)).toBe(440);
+  });
+
+  it('leaves room for the list', () => {
+    expect(clampInspectorWidth(1500, 1600)).toBe(1240);
+  });
+
+  it('falls back to the minimum on a narrow container', () => {
+    expect(clampInspectorWidth(900, 600)).toBe(440);
+  });
+
+  it('keeps a width inside the range', () => {
+    expect(clampInspectorWidth(700, 1600)).toBe(700);
   });
 });

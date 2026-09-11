@@ -60,3 +60,20 @@ export function prettyLooseJson(raw: string): PrettyJson {
 export function looksTruncated(hasMore: boolean, length: number): boolean {
   return hasMore || length >= BODY_LIMIT;
 }
+
+// Find the http(s) URL covering `offset` in a line, so a cmd/ctrl-click inside a
+// JSON string value can open it. Quotes and whitespace end the match.
+//
+// 找出行内覆盖 `offset` 的 http(s) 链接，供 JSON 里 cmd/ctrl+点击直接打开；
+// 引号和空白视为链接结束。
+export const URL_PATTERN = /https?:\/\/[^\s"'`<>\\]+/g;
+
+export function urlAtOffset(line: string, offset: number): string | null {
+  URL_PATTERN.lastIndex = 0;
+  for (let m = URL_PATTERN.exec(line); m; m = URL_PATTERN.exec(line)) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (offset >= start && offset <= end) return m[0].replace(/[.,;:)]+$/, '');
+  }
+  return null;
+}

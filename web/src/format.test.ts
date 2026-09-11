@@ -5,6 +5,7 @@ import {
   looksTruncated,
   prettyJson,
   prettyLooseJson,
+  urlAtOffset,
 } from './format';
 
 describe('prettyJson', () => {
@@ -77,5 +78,29 @@ describe('bodyChunkCodePointLength', () => {
     // JS '🎀'.length === 2; code-point length must stay 1 to match Python slicing.
     expect('🎀'.length).toBe(2);
     expect(bodyChunkCodePointLength({ content: '🎀hi' })).toBe(3);
+  });
+});
+
+describe('urlAtOffset', () => {
+  const line = '  "avatar": "https://cdn.example.com/a.webp",';
+
+  it('finds the url under the cursor', () => {
+    expect(urlAtOffset(line, 20)).toBe('https://cdn.example.com/a.webp');
+  });
+
+  it('returns null outside the url', () => {
+    expect(urlAtOffset(line, 4)).toBeNull();
+  });
+
+  it('stops at the closing quote', () => {
+    expect(urlAtOffset('"http://a.co/x" "http://b.co/y"', 5)).toBe('http://a.co/x');
+  });
+
+  it('picks the second url on the line', () => {
+    expect(urlAtOffset('"http://a.co/x" "http://b.co/y"', 20)).toBe('http://b.co/y');
+  });
+
+  it('drops trailing punctuation', () => {
+    expect(urlAtOffset('see https://a.co/x.', 10)).toBe('https://a.co/x');
   });
 });

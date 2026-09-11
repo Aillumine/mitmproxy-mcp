@@ -103,6 +103,31 @@ export function removePattern(list: string[], pattern: string): string[] {
   return list.filter((item) => item.trim().toLowerCase() !== want);
 }
 
+// A host in both lists reads as broken: ignore wins in passesDisplayFilter, so
+// the row disappears while "只显示 (1)" still looks active. Keep the two lists
+// mutually exclusive — the latest click decides which side a pattern lives on.
+//
+// 同一个 host 同时出现在两个列表里会显得像坏了：passesDisplayFilter 里 ignore
+// 优先，请求被隐藏，可界面上「只显示 (1)」还亮着。所以两个列表互斥，
+// 以最后一次点击为准。
+export function applyPattern(
+  filter: TrafficDisplayFilter,
+  side: 'allow' | 'ignore',
+  pattern: string,
+): TrafficDisplayFilter {
+  return side === 'allow'
+    ? {
+        ...filter,
+        allow: addPattern(filter.allow, pattern),
+        ignore: removePattern(filter.ignore, pattern),
+      }
+    : {
+        ...filter,
+        allow: removePattern(filter.allow, pattern),
+        ignore: addPattern(filter.ignore, pattern),
+      };
+}
+
 export function parseStoredTrafficFilter(raw: unknown): TrafficDisplayFilter {
   if (!raw || typeof raw !== 'object') return { ...EMPTY_TRAFFIC_FILTER };
   const data = raw as Record<string, unknown>;

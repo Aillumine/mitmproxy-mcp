@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { callTool } from '../api';
 import { HtmlBodyPane } from '../components/HtmlBodyPane';
 import { ImageBodyPane } from '../components/ImageBodyPane';
@@ -13,6 +13,8 @@ import {
 } from '../poll/drainTraffic';
 import {
   applyDetailListFields,
+  clampInspectorWidth,
+  INSPECTOR_MIN_WIDTH,
   COPY_MENU_ITEMS,
   countTrafficByKind,
   filterTrafficByKind,
@@ -31,7 +33,7 @@ import {
 } from './trafficState';
 import {
   activeFilterCount,
-  addPattern,
+  applyPattern,
   filterTrafficByDisplayRules,
   hostGlobFromUrl,
   loadTrafficFilter,
@@ -230,6 +232,29 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterTab, setFilterTab] = useState<'allow' | 'ignore'>('allow');
   const [patternDraft, setPatternDraft] = useState('');
+  const [inspectorWidth, setInspectorWidth] = useState(INSPECTOR_MIN_WIDTH);
+
+  const splitRef = useRef<HTMLDivElement>(null);
+  // Drag the split handle to widen the inspector; clamping happens against the
+  // split container so neither pane can be dragged away.
+  //
+  // 拖动分隔条调整右侧详情面板宽度；按分栏容器宽度做钳制，保证两侧都拖不没。
+  const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const rect = splitRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const onMove = (ev: PointerEvent) => {
+      setInspectorWidth(clampInspectorWidth(rect.right - ev.clientX, rect.width));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.classList.remove('resizing-split');
+    };
+    document.body.classList.add('resizing-split');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, []);
 
   const afterIdRef = useRef<string | null>(null);
   const generationRef = useRef(0);
@@ -570,37 +595,19 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   function addCurrentPattern() {
     const pattern = patternDraft.trim();
     if (!pattern) return;
-    if (filterTab === 'allow') {
-      patchDisplayFilter({
-        ...displayFilter,
-        allow: addPattern(displayFilter.allow, pattern),
-      });
-    } else {
-      patchDisplayFilter({
-        ...displayFilter,
-        ignore: addPattern(displayFilter.ignore, pattern),
-      });
-    }
+    patchDisplayFilter(applyPattern(displayFilter, filterTab, pattern));
     setPatternDraft('');
   }
 
   function quickAllowHost(prefix: string) {
     const pattern = hostGlobFromUrl(prefix);
-    patchDisplayFilter({
-      ...displayFilter,
-      enabled: true,
-      allow: addPattern(displayFilter.allow, pattern),
-    });
+    patchDisplayFilter({ ...applyPattern(displayFilter, 'allow', pattern), enabled: true });
     setFilterTab('allow');
   }
 
   function quickIgnoreHost(prefix: string) {
     const pattern = hostGlobFromUrl(prefix);
-    patchDisplayFilter({
-      ...displayFilter,
-      enabled: true,
-      ignore: addPattern(displayFilter.ignore, pattern),
-    });
+    patchDisplayFilter({ ...applyPattern(displayFilter, 'ignore', pattern), enabled: true });
     setFilterTab('ignore');
   }
 
@@ -743,9 +750,8 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                 type="button"
                 onClick={() => {
                   patchDisplayFilter({
-                    ...displayFilter,
+                    ...applyPattern(displayFilter, 'allow', '*.flowgpt.com/*'),
                     enabled: true,
-                    allow: addPattern(displayFilter.allow, '*.flowgpt.com/*'),
                   });
                 }}
               >
@@ -809,7 +815,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
         })}
       </div>
       {banner ? <p className="page-banner muted">{banner}</p> : null}
-      <div className="traffic-split">
+      <div className="traffic-split" ref={splitRef}>
         <div className="traffic-list">
           {rows.length === 0 ? (
             <p className="empty-state muted">
@@ -956,7 +962,18 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
             </table>
           )}
         </div>
-        <aside className="inspector" aria-label="Request inspector">
+        <div
+          className="split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize inspector"
+          onPointerDown={startResize}
+        />
+        <aside
+          className="inspector"
+          aria-label="Request inspector"
+          style={{ width: inspectorWidth }}
+        >
           {!selectedRow ? (
             <p className="muted empty-state">Select a request</p>
           ) : (

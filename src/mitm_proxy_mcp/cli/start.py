@@ -11,6 +11,7 @@ MITM Proxy 启动脚本
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -305,6 +306,92 @@ def mitmdump_args(port: int, addon_path: str) -> list[str]:
     ]
 
 
+def install_sigterm_as_interrupt() -> None:
+    """Make SIGTERM raise KeyboardInterrupt so the shutdown path always runs.
+
+    Cleanup (releasing the port, restoring the Mac system proxy) only lives in
+    the KeyboardInterrupt branch of main(), but proxy_stop terminates us with
+    SIGTERM, whose default action skips it entirely.
+
+    让 SIGTERM 抛出 KeyboardInterrupt，保证退出清理一定执行。
+
+    清理逻辑（释放端口、恢复 Mac 系统代理）只写在 main() 的 KeyboardInterrupt
+    分支里，而 proxy_stop 是用 SIGTERM 杀进程的，默认行为会直接退出、跳过清理，
+    结果 Mac 系统代理还指着已经死掉的端口，本机断网。
+    """
+
+    def _terminate(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _terminate)
+
+
+def shutdown_proxy(process, port: int, proxy_enabled: bool) -> None:
+    """Stop mitmdump, free the port, restore the Mac system proxy.
+
+    Runs from main()'s finally, so it also covers mitmdump exiting or crashing
+    on its own — not just Ctrl+C and proxy_stop's SIGTERM. Leaving it to the
+    KeyboardInterrupt branch meant any other exit path left the Mac system
+    proxy pointing at a dead port, which takes the whole machine offline.
+
+    停止 mitmdump、释放端口、恢复 Mac 系统代理。
+
+    放在 main() 的 finally 里执行，除了 Ctrl+C 和 proxy_stop 的 SIGTERM，
+    也覆盖 mitmdump 自己退出或崩溃的情况。原先只写在 KeyboardInterrupt 分支里，
+    其它退出路径都会让 Mac 系统代理继续指着已经死掉的端口，导致本机断网。
+    """
+    logger.info("\n")
+    logger.warning("    正在停止代理...")
+
+    # 首先尝试通过 process 对象终止
+    if process is not None:
+        try:
+            # 检查进程是否还在运行
+            if process.poll() is None:
+                # 先尝试优雅退出
+                process.terminate()
+                # 等待最多2秒
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # 如果2秒后还没退出，强制kill
+                    logger.warning("    强制终止进程...")
+                    process.kill()
+                    process.wait(timeout=1)
+        except Exception as e:
+            logger.warning(f"    停止进程时出错: {e}")
+
+    # 等待一下，确保进程完全退出
+    time.sleep(0.5)
+
+    # 确保端口被释放（通过端口查找并杀死所有占用端口的进程）
+    try:
+        killed = kill_port_process(port)
+        if killed:
+            logger.opt(colors=True).success("    ✓ 端口已释放")
+        else:
+            # 再次检查端口是否真的被占用
+            if check_port_available(port):
+                logger.info("    ℹ️  端口未被占用")
+            else:
+                logger.warning("    ⚠️  端口可能仍被占用，请手动检查")
+    except Exception as e:
+        logger.warning(f"    清理端口时出错: {e}")
+
+    # 如果启动时设置了 Mac 代理，关闭时自动恢复
+    if proxy_enabled:
+        try:
+            if disable_mac_proxy():
+                logger.opt(colors=True).success("    ✓ Mac Wi-Fi 系统代理已关闭")
+            else:
+                logger.warning("    ⚠️  Mac 代理可能未完全关闭，请手动检查")
+        except Exception as e:
+            logger.warning(f"    关闭 Mac 代理时出错: {e}")
+
+    logger.opt(colors=True).success("    ✓ 代理已停止")
+    logger.info("")
+
+
 def main():
     """主函数"""
     import argparse
@@ -318,6 +405,8 @@ def main():
         help="自动设置 Mac Wi-Fi 系统代理（启动时开启，关闭时恢复）",
     )
     args = parser.parse_args()
+
+    install_sigterm_as_interrupt()
 
     # 标记是否需要在退出时恢复代理
     proxy_enabled = False
@@ -440,64 +529,13 @@ def main():
             env=os.environ.copy(),
         )
 
-        # 等待退出
-        try:
-            process.wait()
-        except KeyboardInterrupt:
-            # 如果 process.wait() 被中断，进程可能还在运行
-            raise
+        # 等待退出；停止走 finally 里的 shutdown_proxy()
+        process.wait()
 
     except KeyboardInterrupt:
-        logger.info("\n")
-        logger.warning("    正在停止代理...")
-        
-        # 首先尝试通过 process 对象终止
-        if 'process' in locals() and process:
-            try:
-                # 检查进程是否还在运行
-                if process.poll() is None:
-                    # 先尝试优雅退出
-                    process.terminate()
-                    # 等待最多2秒
-                    try:
-                        process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        # 如果2秒后还没退出，强制kill
-                        logger.warning("    强制终止进程...")
-                        process.kill()
-                        process.wait(timeout=1)
-            except Exception as e:
-                logger.warning(f"    停止进程时出错: {e}")
-        
-        # 等待一下，确保进程完全退出
-        time.sleep(0.5)
-        
-        # 确保端口被释放（通过端口查找并杀死所有占用端口的进程）
-        try:
-            killed = kill_port_process(args.port)
-            if killed:
-                logger.opt(colors=True).success("    ✓ 端口已释放")
-            else:
-                # 再次检查端口是否真的被占用
-                if check_port_available(args.port):
-                    logger.info("    ℹ️  端口未被占用")
-                else:
-                    logger.warning("    ⚠️  端口可能仍被占用，请手动检查")
-        except Exception as e:
-            logger.warning(f"    清理端口时出错: {e}")
-        
-        # 如果启动时设置了 Mac 代理，关闭时自动恢复
-        if proxy_enabled:
-            try:
-                if disable_mac_proxy():
-                    logger.opt(colors=True).success("    ✓ Mac Wi-Fi 系统代理已关闭")
-                else:
-                    logger.warning("    ⚠️  Mac 代理可能未完全关闭，请手动检查")
-            except Exception as e:
-                logger.warning(f"    关闭 Mac 代理时出错: {e}")
-        
-        logger.opt(colors=True).success("    ✓ 代理已停止")
-        logger.info("")
+        pass
+    finally:
+        shutdown_proxy(process, args.port, proxy_enabled)
 
 
 if __name__ == "__main__":

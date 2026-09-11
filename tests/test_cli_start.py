@@ -67,3 +67,43 @@ def test_mitmdump_args_stream_large_bodies():
     assert "ssl_insecure=true" in args
     assert "-p" in args
     assert "8888" in args
+
+
+def test_sigterm_runs_the_shutdown_path():
+    """SIGTERM 必须抛 KeyboardInterrupt，否则 proxy_stop 会跳过退出清理。"""
+    import os
+    import signal
+
+    from mitm_proxy_mcp.cli.start import install_sigterm_as_interrupt
+
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        install_sigterm_as_interrupt()
+        cleaned = False
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+            # 信号在字节码边界交付，给解释器一次执行机会。
+            for _ in range(1000):
+                pass
+        except KeyboardInterrupt:
+            cleaned = True
+        assert cleaned, "SIGTERM 没有触发 KeyboardInterrupt，退出清理不会执行"
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_shutdown_restores_mac_proxy_on_any_exit(monkeypatch):
+    """代理正常退出（不经 KeyboardInterrupt）也必须恢复 Mac 系统代理。"""
+    from mitm_proxy_mcp.cli import start
+
+    calls = []
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(start, "kill_port_process", lambda _port: False)
+    monkeypatch.setattr(start, "check_port_available", lambda _port: True)
+    monkeypatch.setattr(start, "disable_mac_proxy", lambda: calls.append("off") or True)
+
+    start.shutdown_proxy(None, 8888, proxy_enabled=True)
+    assert calls == ["off"]
+
+    start.shutdown_proxy(None, 8888, proxy_enabled=False)
+    assert calls == ["off"], "没设置过系统代理时不应去动它"

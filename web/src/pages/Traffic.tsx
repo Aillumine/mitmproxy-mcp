@@ -7,6 +7,7 @@ import { BODY_LIMIT, bodyChunkCodePointLength, looksTruncated } from '../format'
 import {
   drainTraffic,
   mergeTrafficPage,
+  PACKAGE_CURSOR_LAG_SECONDS,
   shouldRebuildFromFirstPage,
   type TrafficListPage,
   type TrafficRow,
@@ -93,6 +94,7 @@ type SearchMatch = {
   method: string;
   domain: string;
   response_size: number;
+  package?: string | null;
 };
 
 type SearchResult = ToolEnvelope & { matches?: SearchMatch[] };
@@ -169,6 +171,12 @@ function matchToRow(match: SearchMatch): TrafficRow {
     size: match.response_size,
     time: 0,
     error: null,
+    // Carried through from traffic_search: the package filter applies to search
+    // results too, and a row without it would be hidden as "some other app's".
+    //
+    // 从 traffic_search 透传过来：包名过滤同样作用于搜索结果，缺了这一列的行
+    // 会被当成「别的应用的」隐藏掉。
+    package: match.package ?? null,
   };
 }
 
@@ -405,6 +413,13 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
         };
         const result = await drainTraffic({
           afterId: cursor,
+          // Only lag the cursor when a package filter is on: that is the one
+          // case where a row's value changes after it was first read, and the
+          // lag costs a few re-sent pages per tick.
+          //
+          // 只有启用包名过滤时才让游标滞后：也只有这时一行的内容会在被读到之后
+          // 才变化，而滞后的代价是每一拍多重发几页。
+          lagSeconds: activePackage ? PACKAGE_CURSOR_LAG_SECONDS : 0,
           fetchPage,
         });
         if (cancelled) return;
@@ -474,7 +489,13 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
       window.clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [mode, filterUrl]);
+    // activePackage restarts the poll on purpose: rows already in state were
+    // drained before attribution started and still carry package = null, so the
+    // list has to be rebuilt from the DB rather than filtered in place.
+    //
+    // activePackage 变化时特意重启轮询：已经在 state 里的行是归属开始之前拿到的，
+    // package 还是 null，必须从库里重建列表，而不是就地过滤。
+  }, [mode, filterUrl, activePackage]);
 
   const selectRow = useCallback((row: TrafficRow) => {
     const generation = ++generationRef.current;
@@ -624,19 +645,41 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     }
   }
 
-  async function selectPackage(serial: string, pkg: string | null) {
+  // Single place that moves the selected package: three callers (select, clear,
+  // and the mount-time reconcile) must keep state and localStorage in step, or a
+  // reload comes back filtering by a package nothing is attributing.
+  //
+  // 选中包名的唯一入口：三个调用方（选择、取消、挂载时对账）都必须让 state 和
+  // localStorage 同步，否则刷新后就会按一个没人在归属的包名过滤。
+  function persistPackage(pkg: string | null) {
+    setActivePackage(pkg);
+    try {
+      if (pkg) localStorage.setItem(PACKAGE_STORAGE_KEY, pkg);
+      else localStorage.removeItem(PACKAGE_STORAGE_KEY);
+    } catch {
+      // Best-effort persistence; a private window may refuse storage writes.
+      //
+      // 尽力持久化即可；隐私模式下写入失败直接忽略。
+    }
+  }
+
+  async function selectPackage(serial: string | null, pkg: string | null) {
     setPackageBanner(null);
     try {
       if (!pkg) {
-        await callTool('android_attribute_stop', {});
-        setActivePackage(null);
-        try {
-          localStorage.removeItem(PACKAGE_STORAGE_KEY);
-        } catch {
-          // Best-effort persistence; a private window may refuse storage writes.
-          //
-          // 尽力持久化即可；隐私模式下写入失败直接忽略。
+        const stopped = await callTool<{ success?: boolean; message?: string }>(
+          'android_attribute_stop',
+          {},
+        );
+        if (stopped.success === false) {
+          setPackageBanner(stopped.message ?? '无法停止归属');
+          return;
         }
+        persistPackage(null);
+        return;
+      }
+      if (!serial) {
+        setPackageBanner('没有连接的设备，无法按应用过滤');
         return;
       }
       const result = await callTool<{ success?: boolean; message?: string }>(
@@ -647,14 +690,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
         setPackageBanner(result.message ?? '无法归属该应用的流量');
         return;
       }
-      setActivePackage(pkg);
-      try {
-        localStorage.setItem(PACKAGE_STORAGE_KEY, pkg);
-      } catch {
-        // Best-effort persistence; a private window may refuse storage writes.
-        //
-        // 尽力持久化即可；隐私模式下写入失败直接忽略。
-      }
+      persistPackage(pkg);
     } catch (err) {
       setPackageBanner(err instanceof Error ? err.message : '切换应用归属失败');
     }
@@ -682,6 +718,33 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // Reconcile the package restored from localStorage against the backend
+      // before anything else, and do it even with no device attached: if the
+      // control service restarted, nothing is attributing any more and every new
+      // row stays package = null, so keeping the filter would blank the list for
+      // good with no way back from the UI.
+      //
+      // 先拿后端状态对账 localStorage 里恢复出来的包名，没有设备时也要对账：
+      // 控制服务重启过的话就没人在归属了，新行的 package 永远是 null，
+      // 这时继续过滤会让列表永久空白，而且界面上退不出来。
+      try {
+        const status = await callTool<{ running?: boolean; package?: string | null }>(
+          'android_attribute_status',
+          {},
+        );
+        if (cancelled) return;
+        if (status.running === true && typeof status.package === 'string') {
+          persistPackage(status.package);
+        } else if (status.running === false) {
+          persistPackage(null);
+        }
+      } catch {
+        // Control unreachable — the traffic poll surfaces that already, and
+        // dropping the filter here would just hide the real failure.
+        //
+        // 控制服务连不上——流量轮询已经会报这个错，这里再清过滤器只会盖住真正的
+        // 问题。
+      }
       try {
         const result = await callTool<{ devices?: { serial?: string }[] }>(
           'android_list_devices',
@@ -921,12 +984,30 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
           id="package-select"
           value={activePackage ?? ''}
           onChange={(event) => {
-            const serial = deviceSerial;
-            if (!serial) return;
-            void selectPackage(serial, event.target.value || null);
+            // Clearing the filter needs no device — android_attribute_stop takes
+            // no serial. Gating the whole handler on one used to strand the user
+            // on a package they could not unselect after the phone went away.
+            //
+            // 取消过滤不需要设备——android_attribute_stop 不吃 serial。之前整个
+            // 回调都被设备判断挡住，手机一断用户就卡在某个包名上取消不掉。
+            void selectPackage(deviceSerial, event.target.value || null);
           }}
         >
           <option value="">全部应用</option>
+          {/*
+            An attributed package the device list does not contain (phone
+            unplugged, app uninstalled) still needs its own option: without one
+            the select renders as if "全部应用" were already chosen, so picking it
+            fires no change event and the filter can never be cleared.
+
+            正在归属、但设备列表里没有的包名（手机拔了、应用卸了）也要给一个
+            option：否则下拉框看起来就像已经选中「全部应用」，再点它不会触发
+            change 事件，过滤器就永远清不掉。
+          */}
+          {activePackage &&
+          !packages.some((item) => item.packageName === activePackage) ? (
+            <option value={activePackage}>{activePackage}</option>
+          ) : null}
           {packages.map((item) => (
             <option key={item.packageName} value={item.packageName}>
               {item.packageName}

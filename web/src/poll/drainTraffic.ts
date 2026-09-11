@@ -20,6 +20,43 @@ export type TrafficListPage = {
 
 const PAGE_SIZE = 10;
 
+// How far behind the newest row the incremental cursor is parked while a package
+// filter is active. A row is written with package = NULL and only tagged by the
+// next attribution sample (~1s later), so a cursor pinned to the newest row would
+// leave every row the poll happened to win the race against untagged forever —
+// traffic_list only ever returns rows newer than the cursor. Parking the cursor
+// behind the tag latency re-delivers each row a few times until its package has
+// landed; the re-sent volume is bounded by this window.
+//
+// 启用包名过滤时，增量游标要落在最新一行之后多久。行落库时 package 是 NULL，
+// 要等下一轮归属采样（约 1 秒后）才打标；游标若紧贴最新行，凡是被轮询抢先拿到
+// 的行就永远停在未归属状态——traffic_list 只会返回比游标更新的行。把游标压后
+// 一个「大于打标延迟」的窗口，每行就会被重复下发几次直到包名到位，重发量
+// 也被这个窗口限死。
+export const PACKAGE_CURSOR_LAG_SECONDS = 5;
+
+// Newest row that is already older than the lag window — the rows after it stay
+// in front of the cursor and will be fetched again next tick.
+//
+// 取「已经老过滞后窗口」的最新一行——排在它之后的行留在游标前面，下一拍会被
+// 再次取回。
+function laggedCursor(items: TrafficRow[], lagSeconds: number): string | null {
+  const newest = items[items.length - 1];
+  if (!newest) return null;
+  if (lagSeconds <= 0) return newest.id;
+  // The newest drained row is the clock, not Date.now(): timestamps come from
+  // the capture process, and the browser's clock may sit anywhere relative to it.
+  //
+  // 以最新一行的时间戳为基准而不是 Date.now()：时间戳由抓包进程写入，
+  // 浏览器的时钟和它没有任何保证。
+  const cutoff = newest.timestamp - lagSeconds;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item && item.timestamp <= cutoff) return item.id;
+  }
+  return null;
+}
+
 export function mergeTrafficPage(
   existing: TrafficRow[],
   page: TrafficRow[],
@@ -34,6 +71,7 @@ export function mergeTrafficPage(
 
 export async function drainTraffic(options: {
   afterId: string | null;
+  lagSeconds?: number;
   fetchPage: (args: {
     after_id?: string;
     limit: number;
@@ -58,10 +96,9 @@ export async function drainTraffic(options: {
     offset += PAGE_SIZE;
   }
 
-  const newest = items[items.length - 1];
   return {
     items,
-    newestId: newest?.id ?? options.afterId,
+    newestId: laggedCursor(items, options.lagSeconds ?? 0) ?? options.afterId,
   };
 }
 

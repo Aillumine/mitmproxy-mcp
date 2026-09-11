@@ -4,29 +4,44 @@
 
 **Goal:** 在 Traffic 页选择连接设备上的某个应用（包名），列表只显示该应用发出的请求。
 
-**Architecture:** 手机 App 的每条 TCP 连接在 mitmproxy 侧表现为一个「对端端口」（`flow.client_conn.peername[1]`）。设备侧读 `/proc/net/tcp{,6}` 能拿到某个 uid 当前持有的本地端口集合，两边按端口对齐就能把请求精确归属到应用。非 root 设备通过 `run-as <pkg>`（仅 debuggable 应用）取样，root 设备通过 `su` 取样并按 uid 过滤，两条路径共用同一套解析与回填逻辑。
+**Architecture:** 手机 App 的每条 TCP 连接在 mitmproxy 侧表现为一个「对端端口」（`flow.client_conn.peername[1]`）。`adb shell` 身处 `readproc` 组，一条 `cat /proc/net/tcp /proc/net/tcp6` 就能读到全设备的连接及其真实 uid；按目标应用的 uid 过滤得到它当前持有的本地端口集合，与 mitmproxy 记录的对端端口对齐，即可把请求精确归属到应用。不需要 root，也不需要应用是 debuggable。
 
 **Tech Stack:** Python 3.11 / mitmproxy addon / SQLite / adb / React 19 + TypeScript + Vite
 
 ---
 
-## 调研结论与方案调整（先读这段）
+## Task 0 之后的方案修订（先读这段）
 
-立项时的设定是「阶段一非 root 近似、阶段二 root 精确」。调研后发现**阶段一不必是近似的**，理由如下，方案据此调整：
+立项时的设定是「阶段一非 root 近似、阶段二 root 精确」，方案初稿据此选了 `run-as` 作为非 root 下的精确手段。**Task 0 在 Pixel 7 / Android 17 上实测把这条路否掉了，同时找到一条更好的**（完整记录见 `docs/superpowers/plans/2026-09-11-feasibility-notes.md`）：
 
-| 场景 | 能否精确归属 | 手段 |
-|---|---|---|
-| 自家 debug 包（`android:debuggable=true`） | ✅ 精确 | `adb shell run-as <pkg> cat /proc/net/tcp` —— 非 root 可用 |
-| root 设备 / 模拟器上的任意应用 | ✅ 精确 | `su -c cat /proc/net/tcp` + uid 过滤 |
-| 非 root 真机上的 release 包 / 第三方应用 | ❌ 做不到 | 降级到域名近似（Task 8） |
+| 手段 | 实测结果 |
+|---|---|
+| `run-as <pkg> cat /proc/net/tcp` | ❌ `Permission denied` —— run-as 切到了应用 uid，但也继承了 `untrusted_app` 的 SELinux 域，该域根本没有读 `proc_net_tcp` 的权限 |
+| `adb shell cat /proc/net/tcp{,6}` | ✅ 读到**全设备**的连接，每行带**真实 uid**（实测看到 10197/10203/10133 等应用 uid，而非 shell 的 2000）。`shell` 用户在 `readproc`(3009) 组里，这是它能看全量的原因 |
 
-Android 10+ 把 `/proc/net/tcp` 按 uid 隔离了：普通进程只能看到自己 uid 的 socket。这条限制通常是障碍，但 `run-as` 恰好把命令切到目标 app 的 uid 执行，于是「只看到自己的连接」反而正是我们要的结果。而用户的主场景就是抓自家 debug 包，所以阶段一直接做到精确，**域名近似降级为兜底（Task 8），不是阶段一的主路径**。
+**净结果：机制成立，路径更简单，能力更强。** 一条 `adb shell cat` 拿到全设备连接，按目标应用的 uid 过滤即可。于是：
+
+- **不需要 root**
+- **不需要应用是 debuggable**
+- **任意应用都能精确归属** —— 系统应用、release 包、第三方应用全都行
+
+所以原计划里的「阶段二 root 支持」和「阶段三域名近似兜底」**都不再需要**，Task 7 与 Task 8 已从本方案删除。剩下 6 个任务全部是精确归属的主路径。
+
+### 端口一致性（方案的地基，已验证）
+
+Mac 侧 accept 到的对端端口与设备 `/proc/net/tcp` 里的本地端口完全一致（实测 `DE40 = 56896` 两侧相符）。设备与 Mac 同网段直连，中间无 NAT。
+
+### 实测出来的三个必须处理的细节
+
+1. **两张表都要读。** IPv4 连接落在 `/proc/net/tcp`，应用的连接多数在 `/proc/net/tcp6`（IPv4-mapped 形式）。只读一张会漏。
+2. **TIME_WAIT 行的 uid 是 0。** 已关闭的连接在表里残留一行、uid 归 0。按目标 uid 过滤时这类行自然被排除，不需要额外处理，但解析器的测试要覆盖它。
+3. **前台窗口可能不是应用。** 实测 `mCurrentFocus=Window{946be20 u0 NotificationShade}`，没有 `包名/Activity` 形式，此时前台包名应为 `None`。
 
 ### 已知限制（必须写进 UI 提示）
 
 1. **`adb reverse` 模式下功能不可用。** 仓库里的 `android_reverse_proxy`（`src/mitm_proxy_mcp/tools/android_tools.py:589`）让流量走 adb 转发，源端口会被 adb daemon 改写，端口对齐失效。只有设备直连 Mac 代理（Wi-Fi 填 IP:端口）时能用。
 2. **采样有窗口。** 短连接可能在两次采样之间建立又关闭，这类请求归属不到，显示为「未知」而不是错误归属。
-3. **非 debuggable + 非 root 直接不可用**，UI 需要明确说明而不是静默失败。
+3. **归属只对一台设备生效。** Mac 自己的流量、以及第二台设备的流量都不会被归属，选中应用后它们一并被隐藏。
 
 ---
 
@@ -41,64 +56,9 @@ Android 10+ 把 `/proc/net/tcp` 按 uid 隔离了：普通进程只能看到自�
 
 ---
 
-### Task 0: 真机验证三条假设（不写生产代码）
+### Task 0: 真机验证（✅ 已完成）
 
-整个方案建立在「`run-as` 能读到目标 app 的连接、且端口与 mitmproxy 看到的对端端口一致」之上。先花 10 分钟验证，假设不成立就别往下做。
-
-**Files:**
-- Create: `docs/superpowers/plans/2026-09-11-feasibility-notes.md`（记录验证结果）
-
-**Interfaces:**
-- Consumes: 无
-- Produces: 一份验证结论，决定 Task 4 走 `run-as` 还是直接跳到 Task 7 的 root 路径
-
-- [ ] **Step 1: 确认设备直连代理（不是 adb reverse）**
-
-```bash
-adb devices -l
-adb shell settings get global http_proxy
-```
-
-期望：输出形如 `192.168.x.x:8888`，即设备 Wi-Fi 直连 Mac。如果是 `127.0.0.1:8888`，说明在用 adb reverse，本方案不适用，先改成直连。
-
-- [ ] **Step 2: 验证 run-as 能读到 /proc/net/tcp**
-
-把 `com.your.app` 换成实际 debug 包名，先让 app 产生一些网络请求，再执行：
-
-```bash
-adb shell run-as com.your.app cat /proc/net/tcp6 | head -20
-```
-
-期望：输出多行，每行第 2 列是 `本地地址:端口` 的十六进制，如 `0000...0000:C1B4`。
-失败信号：`run-as: Package 'xxx' is not debuggable` → 该包不可用，只能走 root 路径。
-
-- [ ] **Step 3: 验证端口与 mitmproxy 对端端口一致**
-
-在 mitmproxy 侧临时打印对端端口（改完记得还原）：
-
-```bash
-# 临时在 addon 里加一行打印，确认 peername[1] 的值
-grep -n "def client_ip" src/mitm_proxy_mcp/addon/traffic_addon.py
-```
-
-在 app 里触发一个请求，同时执行 Step 2 的命令，把十六进制端口转成十进制：
-
-```bash
-adb shell run-as com.your.app cat /proc/net/tcp6 | awk 'NR>1 {split($2,a,":"); print strtonum("0x" a[2])}' | sort -n
-```
-
-期望：mitmproxy 打印的对端端口出现在这个列表里。
-
-- [ ] **Step 4: 记录结论**
-
-把三步的实际输出贴进 `docs/superpowers/plans/2026-09-11-feasibility-notes.md`，写明结论：`run-as 路径可用 / 只能走 root / 端口不一致（方案作废）`。
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add docs/superpowers/plans/2026-09-11-feasibility-notes.md
-git commit -m "docs: record feasibility notes for per-package traffic attribution"
-```
+验证已在 Pixel 7 / Android 17 上跑完，结论与原始输出见 `docs/superpowers/plans/2026-09-11-feasibility-notes.md`，方案已按实测修订（见开头「Task 0 之后的方案修订」）。**本任务无需再做，直接从 Task 1 开始。**
 
 ---
 
@@ -398,6 +358,17 @@ def test_ignores_header_and_garbage():
     assert parse_local_ports("  sl  local_address\n  bad line here\n") == set()
 
 
+def test_time_wait_rows_report_uid_zero():
+    """实测：已关闭的连接会残留一行、uid 归 0。按目标 uid 过滤时它必须被排除。"""
+    time_wait = (
+        "  sl  local_address rem_address st tx rx tr tm retr uid\n"
+        "   0: 7A6EA8C0:CA7A FE6EA8C0:4D41 06 00000000:00000000"
+        " 03:0000090F 00000000 0 0 0 3\n"
+    )
+    assert parse_local_ports(time_wait) == {51834}
+    assert parse_local_ports(time_wait, uid=10234) == set()
+
+
 def test_handles_ipv6_rows():
     """tcp6 的地址字段是 32 位十六进制，端口仍在冒号之后。"""
     ipv6 = (
@@ -472,7 +443,9 @@ git commit -m "feat: parse local ports from /proc/net/tcp dumps"
 
 ### Task 3: android_list_packages 工具
 
-列出设备上的应用：包名、uid、是否可 `run-as`、是否为当前前台应用。
+列出设备上的应用：包名、uid、是否为当前前台应用。
+
+归属只需要 uid，而 uid 从 `pm list packages -U` 一次就全拿到了，所以这个工具不做任何逐包探测——**Task 0 之前的草案里有个「对每个包跑一次 `run-as` 探测」的循环，那既失效又是性能地雷**（几百个包 = 几百次 adb 往返），已删除。
 
 **注意应用中文名（label）拿不到。** adb 没有直接读 `PackageManager.getApplicationLabel()` 的命令，唯一可靠办法是 pull 出 APK 再用 `aapt2` 解析，几十 MB 的代价换一个名字不划算。本任务只返回包名，并把前台应用排在最前——开发者抓包时想选的几乎总是刚在用的那个。这一点在代码里用 `ponytail:` 注释标记了升级路径。
 
@@ -489,7 +462,7 @@ git commit -m "feat: parse local ports from /proc/net/tcp dumps"
 - Produces:
   - `parse_package_uids(text: str) -> dict[str, int]`
   - `parse_foreground_package(text: str) -> str | None`
-  - `android_list_packages(serial: str) -> dict[str, Any]`，返回 `{"success": bool, "packages": [{"package": str, "uid": int, "foreground": bool, "debuggable": bool}], "count": int}`
+  - `android_list_packages(serial: str) -> dict[str, Any]`，返回 `{"success": bool, "packages": [{"package": str, "uid": int, "foreground": bool}], "count": int}`
 
 - [ ] **Step 1: 写解析函数的失败测试**
 
@@ -603,19 +576,18 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_list_packages_marks_foreground_and_debuggable(monkeypatch):
-    """前台应用排第一，可 run-as 的应用要标出来——它决定了归属能不能精确。"""
+async def test_list_packages_puts_the_foreground_app_first(monkeypatch):
+    """抓包时想选的几乎总是刚在用的那个，它必须排在第一位。"""
     from mitm_proxy_mcp.tools import android_tools
 
+    calls = []
+
     async def fake_shell(serial, command, timeout=30.0):
+        calls.append(command)
         if "pm list packages" in command:
             return 0, "package:com.example.app uid:10234\npackage:com.zzz uid:10666\n"
         if "dumpsys window" in command:
             return 0, "mCurrentFocus=Window{a1 u0 com.zzz/com.zzz.Main}"
-        if "run-as com.example.app" in command:
-            return 0, "ok"
-        if "run-as com.zzz" in command:
-            return 0, "run-as: Package 'com.zzz' is not debuggable"
         return 1, ""
 
     class FakeAdb:
@@ -629,9 +601,27 @@ async def test_list_packages_marks_foreground_and_debuggable(monkeypatch):
     assert result["packages"][0]["package"] == "com.zzz", "前台应用必须排最前"
     assert result["packages"][0]["foreground"] is True
     by_name = {p["package"]: p for p in result["packages"]}
-    assert by_name["com.example.app"]["debuggable"] is True
-    assert by_name["com.zzz"]["debuggable"] is False
     assert by_name["com.example.app"]["uid"] == 10234
+    assert by_name["com.example.app"]["foreground"] is False
+    assert len(calls) == 2, "只该调两次 adb：一次列包、一次读前台窗口，不做逐包探测"
+
+
+@pytest.mark.asyncio
+async def test_list_packages_reports_a_failed_listing(monkeypatch):
+    from mitm_proxy_mcp.tools import android_tools
+
+    async def fake_shell(serial, command, timeout=30.0):
+        return 1, "error: device offline"
+
+    class FakeAdb:
+        shell = staticmethod(fake_shell)
+
+    monkeypatch.setattr(android_tools, "_get_adb", lambda: FakeAdb())
+
+    result = await android_tools.android_list_packages("serial123")
+
+    assert result["success"] is False
+    assert result["packages"] == []
 ```
 
 异步测试的支持已经就绪：`pyproject.toml` 里 `pytest-asyncio>=0.23.0` 已在依赖中，`asyncio_mode = "auto"` 也配好了（`pyproject.toml:47`），直接写 `async def` 测试即可。
@@ -655,8 +645,7 @@ async def android_list_packages(serial: str) -> dict[str, Any]:
 
     Returns:
         {"success": bool, "packages": [...], "count": int}
-        packages 元素：{"package": 包名, "uid": uid, "foreground": 是否前台,
-                       "debuggable": 能否 run-as（决定非 root 下能否精确归属）}
+        packages 元素：{"package": 包名, "uid": uid, "foreground": 是否前台}
     """
     # ponytail: 只给包名，不给应用中文名。adb 没有读 label 的命令，唯一办法是
     # pull 出 APK 再用 aapt2 解析，几十 MB 换一个名字不值。真需要中文名时，
@@ -679,23 +668,22 @@ async def android_list_packages(serial: str) -> dict[str, Any]:
         _, window_dump = await adb.shell(serial, "dumpsys window | grep mCurrentFocus")
         foreground = parse_foreground_package(window_dump)
 
-        packages = []
-        for name, uid in uids.items():
-            # run-as 成功与否就是「非 root 下能不能精确归属」的答案，直接探一次。
-            #
-            # Whether run-as works is exactly the answer to "can we attribute
-            # without root", so probe it directly.
-            probe_code, probe_out = await adb.shell(
-                serial, f"run-as {name} true", timeout=10.0
-            )
-            debuggable = probe_code == 0 and "not debuggable" not in probe_out
-            packages.append({
+        # Attribution needs only the uid, which the listing already gave us, so
+        # there is nothing to probe per package. An earlier draft ran one adb
+        # round-trip per package to test run-as; that is both useless (SELinux
+        # denies the read anyway) and slow at several hundred packages.
+        #
+        # 归属只需要 uid，而列表里已经带上了，所以不需要逐包探测。早先的草案
+        # 对每个包跑一次 adb 测 run-as，既没用（SELinux 本来就拒绝读）
+        # 又在几百个包时慢得离谱。
+        packages = [
+            {
                 "package": name,
                 "uid": uid,
                 "foreground": name == foreground,
-                "debuggable": debuggable,
-            })
-
+            }
+            for name, uid in uids.items()
+        ]
         packages.sort(key=lambda item: (not item["foreground"], item["package"]))
         return {"success": True, "packages": packages, "count": len(packages)}
 
@@ -717,7 +705,7 @@ from ..android.packages import parse_foreground_package, parse_package_uids
 - [ ] **Step 8: 运行测试确认通过**
 
 Run: `uv run pytest tests/test_android_packages.py -v`
-Expected: 6 passed。
+Expected: 7 passed。
 
 - [ ] **Step 9: 三处注册**
 
@@ -788,9 +776,9 @@ git commit -m "feat: list device packages with uid and attribution capability"
   - `traffic` 表的 `client_port` / `package` 列（Task 1）
 - Produces:
   - `SAMPLE_INTERVAL_SECONDS = 1.0`、`BACKFILL_WINDOW_SECONDS = 30.0`
-  - `sample_command(package: str, uid: int, rooted: bool) -> str`
+  - `sample_command() -> str`
   - `backfill_packages(conn, package, ports, now, window=BACKFILL_WINDOW_SECONDS) -> int`
-  - `class PackageAttributor`，方法 `start()` / `stop()` / `status() -> dict`
+  - `class PackageAttributor(adb, serial, package, uid, db_path)`，方法 `sample_once()` / `start()` / `stop()` / `status() -> dict`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -825,16 +813,17 @@ def _row(conn, rid, port, timestamp, package=None):
     )
 
 
-def test_non_root_uses_run_as():
-    """非 root 靠 run-as 切到应用自己的 uid，才能看到它的连接。"""
-    cmd = sample_command("com.example.app", 10234, rooted=False)
-    assert "run-as com.example.app" in cmd
-    assert "/proc/net/tcp" in cmd
+def test_samples_both_socket_tables():
+    """IPv4 连接在 /proc/net/tcp、应用连接多在 tcp6，只读一张会漏。"""
+    cmd = sample_command()
+    assert "/proc/net/tcp " in cmd or cmd.endswith("/proc/net/tcp")
+    assert "/proc/net/tcp6" in cmd
 
 
-def test_root_uses_su():
-    cmd = sample_command("com.example.app", 10234, rooted=True)
-    assert cmd.startswith("su -c")
+def test_needs_neither_root_nor_run_as():
+    """adb shell 自己就在 readproc 组里，能读全量表——实测 run-as 反而被 SELinux 拒绝。"""
+    cmd = sample_command()
+    assert "su" not in cmd.split()
     assert "run-as" not in cmd
 
 
@@ -910,23 +899,28 @@ SAMPLE_INTERVAL_SECONDS = 1.0
 BACKFILL_WINDOW_SECONDS = 30.0
 
 
-def sample_command(package: str, uid: int, rooted: bool) -> str:
-    """Shell command that dumps the target app's TCP sockets.
+def sample_command() -> str:
+    """Shell command that dumps every TCP socket on the device, with uids.
 
-    Android 10+ shows a process only its own uid's sockets in /proc/net/tcp.
-    Without root that restriction is the mechanism, not the obstacle: run-as
-    executes as the app's uid, so the dump already contains exactly its
-    connections. With root we read everything and filter by uid afterwards.
+    `adb shell` runs as uid 2000, which sits in the readproc group and may read
+    the full /proc/net tables — each row carrying the owning app's real uid. So
+    one plain cat covers every app: no root, and no run-as (which Android's
+    SELinux policy denies outright, verified on Android 17).
 
-    返回用于导出目标应用 TCP 连接的 shell 命令。
+    Both tables matter: plain IPv4 connections land in /proc/net/tcp while app
+    traffic mostly shows up in tcp6 as IPv4-mapped rows.
 
-    Android 10+ 下进程只能在 /proc/net/tcp 里看到自己 uid 的 socket。非 root 时
-    这条限制正是实现手段而非障碍：run-as 以应用自己的 uid 执行，导出的内容恰好
-    就是它的连接。root 时则一次读全量，之后再按 uid 过滤。
+    返回导出设备上全部 TCP 连接（含 uid）的 shell 命令。
+
+    `adb shell` 以 uid 2000 运行，它在 readproc 组里，可以读完整的 /proc/net 表，
+    每一行都带着所属应用的真实 uid。所以一条普通的 cat 就覆盖了所有应用：
+    既不需要 root，也不需要 run-as（后者被 Android 的 SELinux 策略直接拒绝，
+    已在 Android 17 上实测）。
+
+    两张表都要读：纯 IPv4 连接落在 /proc/net/tcp，而应用流量多数以
+    IPv4-mapped 形式出现在 tcp6 里。
     """
-    if rooted:
-        return "su -c 'cat /proc/net/tcp /proc/net/tcp6'"
-    return f"run-as {package} cat /proc/net/tcp /proc/net/tcp6"
+    return "cat /proc/net/tcp /proc/net/tcp6"
 
 
 def backfill_packages(
@@ -1005,7 +999,6 @@ async def test_attributor_samples_and_backfills(tmp_path):
         serial="serial123",
         package="com.example.app",
         uid=10234,
-        rooted=False,
         db_path=db,
     )
 
@@ -1042,7 +1035,6 @@ async def test_attributor_survives_a_failing_shell(tmp_path):
         serial="s",
         package="com.example.app",
         uid=10234,
-        rooted=False,
         db_path=db,
     )
 
@@ -1078,14 +1070,12 @@ class PackageAttributor:
         serial: str,
         package: str,
         uid: int,
-        rooted: bool,
         db_path: Path,
     ) -> None:
         self.adb = adb
         self.serial = serial
         self.package = package
         self.uid = uid
-        self.rooted = rooted
         self.db_path = Path(db_path)
         self._task: asyncio.Task | None = None
         self._samples = 0
@@ -1094,7 +1084,7 @@ class PackageAttributor:
 
     async def sample_once(self) -> int:
         """跑一轮采样并回填，返回本轮归属到的记录数。"""
-        command = sample_command(self.package, self.uid, self.rooted)
+        command = sample_command()
         try:
             code, output = await self.adb.shell(self.serial, command, timeout=10.0)
         except Exception as error:  # adb 掉线、超时、设备重启都归到这里
@@ -1105,7 +1095,11 @@ class PackageAttributor:
             self._last_error = output.strip()[:200]
             return 0
 
-        ports = parse_local_ports(output, uid=self.uid if self.rooted else None)
+        # 表里是全设备的连接，必须按目标应用的 uid 收窄。
+        #
+        # The dump covers every app on the device, so narrowing by the target
+        # uid is what makes the result belong to this package.
+        ports = parse_local_ports(output, uid=self.uid)
         self._samples += 1
         self._last_error = None
         if not ports:
@@ -1144,7 +1138,6 @@ class PackageAttributor:
         return {
             "package": self.package,
             "uid": self.uid,
-            "rooted": self.rooted,
             "running": self._task is not None and not self._task.done(),
             "samples": self._samples,
             "attributed": self._attributed,
@@ -1264,32 +1257,25 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_start_rejects_a_package_that_cannot_be_attributed(monkeypatch):
-    """非 debuggable 又没 root 时必须明确报错，而不是静默跑一个永远归属不到的采样器。"""
+async def test_start_rejects_an_unknown_package(monkeypatch):
+    """设备上没有这个包时必须明确报错，而不是静默跑一个永远归属不到的采样器。"""
     from mitm_proxy_mcp.tools import attribution_tools
 
     async def fake_list_packages(serial):
         return {
             "success": True,
             "packages": [
-                {"package": "com.example.app", "uid": 10234,
-                 "foreground": False, "debuggable": False}
+                {"package": "com.example.app", "uid": 10234, "foreground": False}
             ],
             "count": 1,
         }
 
-    class FakeAdb:
-        @staticmethod
-        async def is_rooted(serial):
-            return False
-
     monkeypatch.setattr(attribution_tools, "android_list_packages", fake_list_packages)
-    monkeypatch.setattr(attribution_tools, "_get_adb", lambda: FakeAdb())
 
-    result = await attribution_tools.android_attribute_start("s", "com.example.app")
+    result = await attribution_tools.android_attribute_start("s", "com.nope")
 
     assert result["success"] is False
-    assert "debuggable" in result["message"] or "root" in result["message"]
+    assert "com.nope" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -1300,17 +1286,12 @@ async def test_start_then_status_then_stop(monkeypatch, tmp_path):
         return {
             "success": True,
             "packages": [
-                {"package": "com.example.app", "uid": 10234,
-                 "foreground": True, "debuggable": True}
+                {"package": "com.example.app", "uid": 10234, "foreground": True}
             ],
             "count": 1,
         }
 
     class FakeAdb:
-        @staticmethod
-        async def is_rooted(serial):
-            return False
-
         @staticmethod
         async def shell(serial, command, timeout=30.0):
             return 0, ""
@@ -1374,7 +1355,7 @@ async def android_attribute_start(serial: str, package: str) -> dict[str, Any]:
         package: 目标应用包名（从 android_list_packages 获取）
 
     Returns:
-        {"success": bool, "message": str, "package": str, "rooted": bool}
+        {"success": bool, "message": str, "package": str, "uid": int}
     """
     global _attributor
 
@@ -1388,26 +1369,14 @@ async def android_attribute_start(serial: str, package: str) -> dict[str, Any]:
     if target is None:
         return {"success": False, "message": f"设备上没有找到应用 {package}"}
 
-    adb = _get_adb()
-    rooted = await adb.is_rooted(serial)
-    if not rooted and not target["debuggable"]:
-        return {
-            "success": False,
-            "message": (
-                f"{package} 不是 debuggable 应用，设备也没有 root，无法精确归属。"
-                "请改用 debug 包，或在 root 设备 / 模拟器上抓包。"
-            ),
-        }
-
     if _attributor is not None:
         await _attributor.stop()
 
     _attributor = PackageAttributor(
-        adb=adb,
+        adb=_get_adb(),
         serial=serial,
         package=package,
         uid=target["uid"],
-        rooted=rooted,
         db_path=_db_path(),
     )
     _attributor.start()
@@ -1415,7 +1384,7 @@ async def android_attribute_start(serial: str, package: str) -> dict[str, Any]:
         "success": True,
         "message": f"已开始归属 {package} 的流量",
         "package": package,
-        "rooted": rooted,
+        "uid": target["uid"],
     }
 
 
@@ -1451,7 +1420,7 @@ Expected: 4 passed。
 ```python
         Tool(
             name="android_attribute_start",
-            description="开始把抓到的流量归属到指定应用。仅支持 debuggable 应用或 root 设备。",
+            description="开始把抓到的流量归属到指定应用。要求设备直连代理（不能是 adb reverse 模式）。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1584,8 +1553,8 @@ describe('parsePackages', () => {
   it('reads the tool envelope', () => {
     const parsed = parsePackages({
       packages: [
-        { package: 'com.a', uid: 10234, foreground: true, debuggable: true },
-        { package: 'com.b', uid: 10666, foreground: false, debuggable: false },
+        { package: 'com.a', uid: 10234, foreground: true },
+        { package: 'com.b', uid: 10666, foreground: false },
       ],
     });
     expect(parsed).toHaveLength(2);
@@ -1593,7 +1562,6 @@ describe('parsePackages', () => {
       packageName: 'com.a',
       uid: 10234,
       foreground: true,
-      debuggable: true,
     });
   });
 
@@ -1622,7 +1590,6 @@ export type DevicePackage = {
   packageName: string;
   uid: number;
   foreground: boolean;
-  debuggable: boolean;
 };
 
 export function parsePackages(result: { packages?: unknown }): DevicePackage[] {
@@ -1636,7 +1603,6 @@ export function parsePackages(result: { packages?: unknown }): DevicePackage[] {
         packageName: data.package,
         uid: typeof data.uid === 'number' ? data.uid : 0,
         foreground: data.foreground === true,
-        debuggable: data.debuggable === true,
       },
     ];
   });
@@ -1685,6 +1651,7 @@ import {
 state 区（`const [patternDraft, setPatternDraft] = useState('');` 附近）加：
 
 ```typescript
+  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
   const [packages, setPackages] = useState<DevicePackage[]>([]);
   const [activePackage, setActivePackage] = useState<string | null>(() => {
     try {
@@ -1736,6 +1703,27 @@ state 区（`const [patternDraft, setPatternDraft] = useState('');` 附近）加
   }
 ```
 
+挂载时拉一次设备列表取第一台，并加载它的应用列表（放在上面两个函数之后，JSX 之前）：
+
+```typescript
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await callTool<{ devices?: { serial?: string }[] }>(
+        'android_list_devices',
+        {},
+      );
+      const serial = result.devices?.[0]?.serial ?? null;
+      if (cancelled || !serial) return;
+      setDeviceSerial(serial);
+      await loadPackages(serial);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+```
+
 在计算可见行的地方（搜 `filterTrafficByDisplayRules(` 的调用处）外面再包一层：
 
 ```typescript
@@ -1761,14 +1749,9 @@ state 区（`const [patternDraft, setPatternDraft] = useState('');` 附近）加
         >
           <option value="">全部应用</option>
           {packages.map((item) => (
-            <option
-              key={item.packageName}
-              value={item.packageName}
-              disabled={!item.debuggable}
-            >
+            <option key={item.packageName} value={item.packageName}>
               {item.packageName}
               {item.foreground ? '（前台）' : ''}
-              {item.debuggable ? '' : '（不可归属）'}
             </option>
           ))}
         </select>
@@ -1779,28 +1762,6 @@ state 区（`const [patternDraft, setPatternDraft] = useState('');` 附近）加
       {packageBanner ? <p className="page-banner warn-banner">{packageBanner}</p> : null}
 ```
 
-`deviceSerial` 从哪来：Traffic 页目前不持有设备序列号。最省的做法是在挂载时拉一次设备列表取第一台：
-
-```typescript
-  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const result = await callTool<{ devices?: { serial?: string }[] }>(
-        'android_list_devices',
-        {},
-      );
-      const serial = result.devices?.[0]?.serial ?? null;
-      if (cancelled || !serial) return;
-      setDeviceSerial(serial);
-      await loadPackages(serial);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-```
 
 - [ ] **Step 7: 样式**
 
@@ -1849,287 +1810,14 @@ git commit -m "feat(webui): filter traffic by the selected Android package"
 
 ---
 
-### Task 7: root 设备支持任意应用
-
-Task 4 的 `sample_command` 已经写好了 root 分支，这一步只补 uid 过滤的真实路径和「系统应用也能选」。
-
-**Files:**
-- Modify: `src/mitm_proxy_mcp/tools/android_tools.py`（`android_list_packages` 加 `include_system` 参数）
-- Modify: `src/mitm_proxy_mcp/server.py`、`src/mitm_proxy_mcp/control/dispatch.py`
-- Test: `tests/test_android_packages.py`
-
-**Interfaces:**
-- Consumes: `AdbClient.is_rooted(serial) -> bool`（`src/mitm_proxy_mcp/android/adb_client.py:307`）
-- Produces: `android_list_packages(serial: str, include_system: bool = False) -> dict`
-
-- [ ] **Step 1: 写失败测试**
-
-追加到 `tests/test_android_packages.py`：
-
-```python
-@pytest.mark.asyncio
-async def test_root_device_can_attribute_any_package(monkeypatch):
-    """root 设备上 debuggable 不再是前提，系统应用也应可选。"""
-    from mitm_proxy_mcp.tools import android_tools
-
-    commands = []
-
-    async def fake_shell(serial, command, timeout=30.0):
-        commands.append(command)
-        if "pm list packages" in command:
-            return 0, "package:com.android.chrome uid:10111\n"
-        if "dumpsys window" in command:
-            return 0, ""
-        return 1, "run-as: Package 'com.android.chrome' is not debuggable"
-
-    class FakeAdb:
-        shell = staticmethod(fake_shell)
-
-        @staticmethod
-        async def is_rooted(serial):
-            return True
-
-    monkeypatch.setattr(android_tools, "_get_adb", lambda: FakeAdb())
-
-    result = await android_tools.android_list_packages("s", include_system=True)
-
-    assert result["success"] is True
-    assert result["packages"][0]["attributable"] is True, "root 下任何应用都能归属"
-    assert any("pm list packages -U" in c and "-3" not in c for c in commands)
-```
-
-- [ ] **Step 2: 运行测试确认失败**
-
-Run: `uv run pytest tests/test_android_packages.py -k root_device -v`
-Expected: FAIL，`android_list_packages() got an unexpected keyword argument 'include_system'`。
-
-- [ ] **Step 3: 实现**
-
-修改 `android_list_packages`：
-
-```python
-async def android_list_packages(
-    serial: str, include_system: bool = False
-) -> dict[str, Any]:
-```
-
-把取列表那行改成：
-
-```python
-        listing_command = (
-            "pm list packages -U" if include_system else "pm list packages -3 -U"
-        )
-        code, listing = await adb.shell(serial, listing_command)
-```
-
-在 `foreground = parse_foreground_package(window_dump)` 之后加：
-
-```python
-        # Root reads every socket table, so run-as is irrelevant there — any app
-        # can be attributed. Probing run-as per package is also slow, so skip it.
-        #
-        # root 能读全量 socket 表，run-as 在那边无关紧要——任何应用都能归属。
-        # 逐个探测 run-as 也慢，root 下直接跳过。
-        rooted = await adb.is_rooted(serial)
-```
-
-把循环内构造 dict 的部分改成：
-
-```python
-        for name, uid in uids.items():
-            if rooted:
-                debuggable = False
-            else:
-                probe_code, probe_out = await adb.shell(
-                    serial, f"run-as {name} true", timeout=10.0
-                )
-                debuggable = probe_code == 0 and "not debuggable" not in probe_out
-            packages.append({
-                "package": name,
-                "uid": uid,
-                "foreground": name == foreground,
-                "debuggable": debuggable,
-                "attributable": rooted or debuggable,
-            })
-```
-
-Task 5 的 `android_attribute_start` 里，把判断条件从 `not rooted and not target["debuggable"]` 改成 `not target["attributable"]`。Task 6 前端的 `parsePackages` 加一个 `attributable: data.attributable === true`，`<option disabled>` 的判断从 `!item.debuggable` 改成 `!item.attributable`，文案同步。
-
-- [ ] **Step 4: 运行测试确认通过**
-
-Run: `uv run pytest tests/test_android_packages.py -v && cd web && npx vitest run`
-Expected: 两边都全绿。
-
-- [ ] **Step 5: server 与 dispatch 补参数**
-
-`server.py` 的 `android_list_packages` schema 加：
-
-```python
-                    "include_system": {
-                        "type": "boolean",
-                        "description": "是否包含系统应用（仅 root 设备有意义），默认 false",
-                        "default": False,
-                    },
-```
-
-`dispatch.py` 的 `_call_android_list_packages` 改成：
-
-```python
-async def _call_android_list_packages(arguments: dict[str, Any]) -> dict[str, Any]:
-    return await _call_async(
-        "mitm_proxy_mcp.tools.android_tools",
-        "android_list_packages",
-        serial=arguments["serial"],
-        include_system=arguments.get("include_system", False),
-    )
-```
-
-- [ ] **Step 6: 全量验证**
-
-```bash
-uv run pytest -q && cd web && npx tsc --noEmit -p tsconfig.json && npx vitest run && npm run build
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/mitm_proxy_mcp web/src
-git commit -m "feat: attribute any package on rooted devices"
-```
-
----
-
-### Task 8: 非 root + 非 debuggable 的域名近似兜底
-
-只在精确归属不可用时出现，且必须让用户知道结果是近似的。
-
-**Files:**
-- Modify: `web/src/pages/packageFilter.ts`
-- Modify: `web/src/pages/packageFilter.test.ts`
-- Modify: `web/src/pages/Traffic.tsx`
-
-**Interfaces:**
-- Consumes: `filterRowsByPackage`（Task 6）、`addPattern` / `TrafficDisplayFilter`（`web/src/pages/trafficFilter.ts`）
-- Produces: `domainsSeenFor(rows: TrafficRow[], pkg: string) -> string[]`
-
-- [ ] **Step 1: 写失败测试**
-
-追加到 `web/src/pages/packageFilter.test.ts`：
-
-```typescript
-import { domainsSeenFor } from './packageFilter';
-
-describe('domainsSeenFor', () => {
-  it('collects the domains already attributed to a package', () => {
-    const rows = [
-      { ...row('a', 'com.example.app'), domain: 'api.example.com' },
-      { ...row('b', 'com.example.app'), domain: 'cdn.example.com' },
-      { ...row('c', 'com.example.app'), domain: 'api.example.com' },
-      { ...row('d', 'com.other'), domain: 'other.com' },
-    ] as TrafficRow[];
-
-    expect(domainsSeenFor(rows, 'com.example.app')).toEqual([
-      'api.example.com',
-      'cdn.example.com',
-    ]);
-  });
-
-  it('returns nothing for an unknown package', () => {
-    expect(domainsSeenFor([], 'com.example.app')).toEqual([]);
-  });
-});
-```
-
-- [ ] **Step 2: 运行测试确认失败**
-
-Run: `cd web && npx vitest run src/pages/packageFilter.test.ts`
-Expected: FAIL，`domainsSeenFor is not a function`。
-
-- [ ] **Step 3: 实现**
-
-追加到 `web/src/pages/packageFilter.ts`：
-
-```typescript
-// Fallback for phones where exact attribution is impossible: turn the domains a
-// package was already seen using into display-filter rules. It is a guess —
-// two apps hitting the same CDN are indistinguishable — so the UI must say so.
-//
-// 精确归属做不到时的兜底：把某个应用已经出现过的域名变成显示过滤规则。
-// 这是猜的——两个应用打同一个 CDN 就分不开了——所以界面上必须说清楚。
-export function domainsSeenFor(rows: TrafficRow[], pkg: string): string[] {
-  const seen = new Set<string>();
-  for (const row of rows) {
-    if (row.package === pkg && row.domain) seen.add(row.domain);
-  }
-  return [...seen];
-}
-```
-
-- [ ] **Step 4: 运行测试确认通过**
-
-Run: `cd web && npx vitest run src/pages/packageFilter.test.ts`
-Expected: 7 passed。
-
-- [ ] **Step 5: 接进界面**
-
-在 Task 6 的 `.package-picker` 里，`activePackage` 为真时追加一个按钮：
-
-```tsx
-        {activePackage ? (
-          <button
-            type="button"
-            className="curl-btn"
-            title="把该应用已出现过的域名转成过滤规则，之后即使停止归属也能大致只看它"
-            onClick={() => {
-              const domains = domainsSeenFor(rows, activePackage);
-              if (domains.length === 0) {
-                setPackageBanner('还没归属到任何请求，先操作一下这个应用');
-                return;
-              }
-              patchDisplayFilter({
-                ...displayFilter,
-                enabled: true,
-                allow: domains.reduce(
-                  (list, domain) => addPattern(list, `*${domain}*`),
-                  displayFilter.allow,
-                ),
-              });
-              setPackageBanner(
-                `已把 ${domains.length} 个域名加进「只显示」规则，这是近似结果：` +
-                  '共用同一个 CDN 的其他应用也会被显示。',
-              );
-            }}
-          >
-            固化为域名规则
-          </button>
-        ) : null}
-```
-
-import 区补 `domainsSeenFor` 和 `addPattern`（`addPattern` 来自 `./trafficFilter`，Task 6 之后 Traffic.tsx 里可能已经没有它的 import 了，需要补回）。
-
-- [ ] **Step 6: 验证**
-
-```bash
-cd web && npx tsc --noEmit -p tsconfig.json && npx vitest run && npm run build
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add web/src src/mitm_proxy_mcp/webui
-git commit -m "feat(webui): freeze attributed domains into display rules as a fallback"
-```
-
----
-
 ## 自查记录
 
 **需求覆盖：**
 - 「获取设备所有应用名称和包名」→ Task 3（包名 + uid + 前台标记；应用中文名拿不到，已在 Task 3 说明原因并留升级路径）
 - 「选择包名把该应用所有请求获取到」→ Task 1 + 2 + 4 + 5（源端口对齐 + 采样回填 + 按包名查询）
 - 「其他应用不展示」→ Task 6（前端过滤 + 未归属行一并隐藏）
-- 「分阶段：先近似后精确」→ 调整为：Task 1-6 精确（debuggable 应用）、Task 7 精确（root 任意应用）、Task 8 近似兜底，理由见开头「调研结论与方案调整」
+- 「分阶段：先近似后精确」→ Task 0 实测后全部收敛为精确路径（任意应用、不需 root、不需 debuggable），原 Task 7（root 支持）与 Task 8（域名近似兜底）已删除，理由见开头「Task 0 之后的方案修订」
 
-**类型一致性：** `android_list_packages` 在 Task 3 返回 `debuggable`，Task 7 增加 `attributable` 并把下游判断切过去，Task 5 的 `android_attribute_start` 与 Task 6 的前端已同步说明改动点。`TrafficRecord.package` / `TrafficRow.package` / SQL 列 `package` 三处命名一致。
+**类型一致性：** `android_list_packages` 的返回项在 Task 3、Task 5、Task 6 三处均为 `{package, uid, foreground}`。`PackageAttributor(adb, serial, package, uid, db_path)` 在 Task 4 定义、Task 5 构造，签名一致。`TrafficRecord.package` / `TrafficRow.package` / SQL 列 `package` 三处命名一致。
 
-**未决问题（执行前请确认）：** Task 0 的三条假设若不成立——尤其是「mitmproxy 看到的对端端口与设备 `/proc/net/tcp` 的本地端口一致」——Task 1-7 全部作废，只剩 Task 8 的近似方案可用。所以 Task 0 必须先做。
+**Task 0 已完成：** 端口一致性成立，`adb shell` 可读全量 socket 表并看到真实 uid，`run-as` 路径被 SELinux 拒绝。方案已据此修订，原始输出见 `docs/superpowers/plans/2026-09-11-feasibility-notes.md`。

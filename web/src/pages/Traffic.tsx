@@ -609,38 +609,54 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   }
 
   async function loadPackages(serial: string) {
-    const result = await callTool<{ packages?: unknown; message?: string }>(
-      'android_list_packages',
-      { serial },
-    );
-    setPackages(parsePackages(result));
+    try {
+      const result = await callTool<{ success?: boolean; packages?: unknown; message?: string }>(
+        'android_list_packages',
+        { serial },
+      );
+      if (result.success === false) {
+        setPackageBanner(result.message ?? '读取应用列表失败');
+        return;
+      }
+      setPackages(parsePackages(result));
+    } catch (err) {
+      setPackageBanner(err instanceof Error ? err.message : '读取应用列表失败');
+    }
   }
 
   async function selectPackage(serial: string, pkg: string | null) {
     setPackageBanner(null);
-    if (!pkg) {
-      await callTool('android_attribute_stop', {});
-      setActivePackage(null);
-      try {
-        localStorage.removeItem(PACKAGE_STORAGE_KEY);
-      } catch {
-        // 私密模式下写不了，不影响本次会话
-      }
-      return;
-    }
-    const result = await callTool<{ success?: boolean; message?: string }>(
-      'android_attribute_start',
-      { serial, package: pkg },
-    );
-    if (result.success === false) {
-      setPackageBanner(result.message ?? '无法归属该应用的流量');
-      return;
-    }
-    setActivePackage(pkg);
     try {
-      localStorage.setItem(PACKAGE_STORAGE_KEY, pkg);
-    } catch {
-      // 同上
+      if (!pkg) {
+        await callTool('android_attribute_stop', {});
+        setActivePackage(null);
+        try {
+          localStorage.removeItem(PACKAGE_STORAGE_KEY);
+        } catch {
+          // Best-effort persistence; a private window may refuse storage writes.
+          //
+          // 尽力持久化即可；隐私模式下写入失败直接忽略。
+        }
+        return;
+      }
+      const result = await callTool<{ success?: boolean; message?: string }>(
+        'android_attribute_start',
+        { serial, package: pkg },
+      );
+      if (result.success === false) {
+        setPackageBanner(result.message ?? '无法归属该应用的流量');
+        return;
+      }
+      setActivePackage(pkg);
+      try {
+        localStorage.setItem(PACKAGE_STORAGE_KEY, pkg);
+      } catch {
+        // Best-effort persistence; a private window may refuse storage writes.
+        //
+        // 尽力持久化即可；隐私模式下写入失败直接忽略。
+      }
+    } catch (err) {
+      setPackageBanner(err instanceof Error ? err.message : '切换应用归属失败');
     }
   }
 
@@ -666,14 +682,20 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const result = await callTool<{ devices?: { serial?: string }[] }>(
-        'android_list_devices',
-        {},
-      );
-      const serial = result.devices?.[0]?.serial ?? null;
-      if (cancelled || !serial) return;
-      setDeviceSerial(serial);
-      await loadPackages(serial);
+      try {
+        const result = await callTool<{ devices?: { serial?: string }[] }>(
+          'android_list_devices',
+          {},
+        );
+        const serial = result.devices?.[0]?.serial ?? null;
+        if (cancelled || !serial) return;
+        setDeviceSerial(serial);
+        await loadPackages(serial);
+      } catch (err) {
+        if (!cancelled) {
+          setPackageBanner(err instanceof Error ? err.message : '读取设备列表失败');
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -684,11 +706,21 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     () => filterTrafficByDisplayRules(rows, displayFilter),
     [rows, displayFilter],
   );
-  const visibleRows = useMemo(
-    () => filterRowsByPackage(filterTrafficByKind(displayRows, kind), activePackage),
-    [displayRows, kind, activePackage],
+  // Package filtering is orthogonal to kind (HTTP/WS/...), same as the
+  // allow/ignore display filter above it — so it narrows the shared row set
+  // before either the kind tab counts or the kind-filtered list are derived.
+  //
+  // 按包名过滤和 kind 分类是正交的，跟上面的 allow/ignore 展示过滤一样，
+  // 都要先收窄公共行集合，再分别喂给 tab 计数和按 kind 过滤后的列表。
+  const packageRows = useMemo(
+    () => filterRowsByPackage(displayRows, activePackage),
+    [displayRows, activePackage],
   );
-  const kindCounts = useMemo(() => countTrafficByKind(displayRows), [displayRows]);
+  const visibleRows = useMemo(
+    () => filterTrafficByKind(packageRows, kind),
+    [packageRows, kind],
+  );
+  const kindCounts = useMemo(() => countTrafficByKind(packageRows), [packageRows]);
   const groups = useMemo(() => groupTrafficByPrefix(visibleRows), [visibleRows]);
   const filterRuleCount = activeFilterCount(displayFilter);
   const copyMenuRow =

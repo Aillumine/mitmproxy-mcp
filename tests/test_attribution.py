@@ -1,8 +1,8 @@
-"""端口归属采样器的测试：采样命令的形态，以及回填窗口 / 只改未归属行两条关键规则。
-
-Tests for the port-attribution sampler: the shape of the sample command, and
+"""Tests for the port-attribution sampler: the shape of the sample command, and
 the two rules that keep backfill from mis-attributing traffic — the backfill
 window and touching only still-unowned rows.
+
+端口归属采样器的测试：采样命令的形态，以及回填窗口 / 只改未归属行两条关键规则。
 """
 
 import sqlite3
@@ -116,12 +116,12 @@ async def test_attributor_samples_and_backfills(tmp_path):
     class FakeAdb:
         @staticmethod
         async def shell(serial, command, timeout=30.0):
-            # tx_queue:rx_queue 与 tr:tm->when 必须是冒号拼接的单个字段（与
-            # test_proc_net.py 里已验证过的真实格式一致），否则 uid 会错位。
-            #
             # tx_queue:rx_queue and tr:tm->when must stay colon-joined single
             # fields (matching the verified real format in test_proc_net.py),
             # or the uid column shifts out of place.
+            #
+            # tx_queue:rx_queue 与 tr:tm->when 必须是冒号拼接的单个字段（与
+            # test_proc_net.py 里已验证过的真实格式一致），否则 uid 会错位。
             return 0, (
                 "  sl  local_address rem_address st tx rx tr tm retr uid\n"
                 "   0: 0A00020F:D431 8EFB2D22:01BB 01 00000000:00000000"
@@ -167,6 +167,44 @@ async def test_attributor_survives_a_failing_shell(tmp_path):
     attributor = PackageAttributor(
         adb=BrokenAdb(),
         serial="s",
+        package="com.example.app",
+        uid=10234,
+        db_path=db,
+    )
+
+    assert await attributor.sample_once() == 0
+    assert attributor.status()["last_error"] is not None
+
+
+@pytest.mark.asyncio
+async def test_attributor_survives_a_broken_database(tmp_path):
+    """DB path unavailable (locked, missing directory, stale schema) must not
+    escape sample_once and kill the polling loop either — same contract as an
+    adb failure.
+
+    数据库打不开（被锁、目录不存在、schema 过期）同样不能从 sample_once 逃出去、
+    把轮询循环带崩——和 adb 失败走同一份「记录后继续」的承诺。
+    """
+    from mitm_proxy_mcp.android.attribution import PackageAttributor
+
+    # 指向一个不存在的目录：sqlite3.connect 会抛 OperationalError。
+    #
+    # Points at a directory that was never created: sqlite3.connect raises
+    # OperationalError.
+    db = tmp_path / "no-such-dir" / "traffic.db"
+
+    class FakeAdb:
+        @staticmethod
+        async def shell(serial, command, timeout=30.0):
+            return 0, (
+                "  sl  local_address rem_address st tx rx tr tm retr uid\n"
+                "   0: 0A00020F:D431 8EFB2D22:01BB 01 00000000:00000000"
+                " 00:00000000 00000000 10234 0 1 1\n"
+            )
+
+    attributor = PackageAttributor(
+        adb=FakeAdb(),
+        serial="serial123",
         package="com.example.app",
         uid=10234,
         db_path=db,

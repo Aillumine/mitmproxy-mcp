@@ -9,11 +9,11 @@ from loguru import logger
 
 from mitm_proxy_mcp.android.proc_net import parse_local_ports
 
-# 采样间隔与回填窗口。窗口不能太长：系统会复用端口，超过窗口的老记录再认领
-# 就可能把别的应用的请求算到自己头上。
-#
 # Sampling interval and backfill window. The window must stay short: the OS
 # reuses ports, so claiming rows older than this risks stealing another app's.
+#
+# 采样间隔与回填窗口。窗口不能太长：系统会复用端口，超过窗口的老记录再认领
+# 就可能把别的应用的请求算到自己头上。
 SAMPLE_INTERVAL_SECONDS = 1.0
 BACKFILL_WINDOW_SECONDS = 30.0
 
@@ -72,12 +72,14 @@ def backfill_packages(
 
 
 class PackageAttributor:
-    """轮询目标应用的 TCP 连接，把流量记录回填成它的包名。
+    """Poll the target app's TCP sockets and tag traffic rows with its package.
 
     Runs as a single asyncio task: one app is being attributed at a time, which
     matches the UI (one selected package). Sampling failures are recorded and
     swallowed — a phone that goes offline must not take the control service with
     it.
+
+    轮询目标应用的 TCP 连接，把流量记录回填成它的包名。
 
     以单个 asyncio 任务运行：同一时刻只归属一个应用，与界面上「选中一个包名」
     一致。采样失败只记录不抛出——手机掉线不能把控制服务一起带走。
@@ -114,21 +116,33 @@ class PackageAttributor:
             self._last_error = output.strip()[:200]
             return 0
 
-        # 表里是全设备的连接，必须按目标应用的 uid 收窄。
-        #
         # The dump covers every app on the device, so narrowing by the target
         # uid is what makes the result belong to this package.
+        #
+        # 表里是全设备的连接，必须按目标应用的 uid 收窄。
         ports = parse_local_ports(output, uid=self.uid)
         self._samples += 1
         self._last_error = None
         if not ports:
             return 0
 
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
+        # DB errors (locked file, full disk, a stale schema) must not escape
+        # either — same "record and keep going" contract as the adb failure
+        # path above, or one bad sample kills the loop for good.
+        #
+        # DB 层的异常（文件被锁、磁盘满、schema 过期）同样不能逃出去——
+        # 和上面 adb 失败路径一样「记录后继续」，否则一次坏采样就会
+        # 把整个循环永久打断。
         try:
-            updated = backfill_packages(conn, self.package, ports, time.time())
-        finally:
-            conn.close()
+            conn = sqlite3.connect(str(self.db_path), timeout=10)
+            try:
+                updated = backfill_packages(conn, self.package, ports, time.time())
+            finally:
+                conn.close()
+        except Exception as error:
+            self._last_error = str(error)
+            return 0
+
         self._attributed += updated
         return updated
 

@@ -287,3 +287,42 @@ describe('laggedCursor via drainTraffic', () => {
     expect(result.newestId).toBe('seed');
   });
 });
+
+describe('laggedCursor with no anchor to fall back on', () => {
+  it('does not strand the cursor at null when the very first drain has no row older than the window', async () => {
+    const backend = fakeBackend();
+    // Ten rows inside one second — a poll rate above ~2 req/s produces this
+    // easily — and, unlike the fixtures above, no older row to give
+    // laggedCursor a place to park on. afterId is also null (a fresh mount),
+    // so there is no previous cursor to fall back to either.
+    //
+    // 十行都落在一秒内——轮询速率超过约 2 请求/秒就很容易出现——而且和上面
+    // 的样本不同，这里没有更老的行给 laggedCursor 一个停靠点。afterId 也是
+    // null（刚挂载），同样没有旧游标可回退。
+    for (let i = 0; i < 10; i += 1) backend.insert(`req-${i}`, 200 + i * 0.1);
+
+    const tick1 = await drainTraffic({
+      afterId: null,
+      lagSeconds: PACKAGE_CURSOR_LAG_SECONDS,
+      fetchPage: backend.fetchPage,
+    });
+    expect(tick1.newestId).toBe('req-0');
+
+    // A burst bigger than PAGE_SIZE lands before the next tick. A cursor
+    // stuck at null would keep re-reading only the newest page and
+    // permanently skip whatever fell out of the top 10 in between.
+    //
+    // 下一拍之前又涌入一批超过 PAGE_SIZE 的新行。游标若卡在 null，
+    // 就会一直只读到最新一页，中间掉出前 10 的行会被永久跳过。
+    for (let i = 10; i < 25; i += 1) {
+      backend.insert(`req-${i}`, 201 + (i - 10) * 0.1);
+    }
+
+    const tick2 = await drainTraffic({
+      afterId: tick1.newestId,
+      lagSeconds: PACKAGE_CURSOR_LAG_SECONDS,
+      fetchPage: backend.fetchPage,
+    });
+    expect(tick2.items.map((item) => item.id)).toContain('req-14');
+  });
+});

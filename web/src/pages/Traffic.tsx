@@ -434,6 +434,17 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
         ) {
           const full = await drainTraffic({
             afterId: null,
+            // Rebuild used to omit lagSeconds because a lagged cursor could
+            // get stuck at null (see drainTraffic's items[0] fallback above,
+            // added this round). That's fixed now, so apply the same lag
+            // here too — otherwise a Clear during package filtering leaves
+            // up to PAGE_SIZE freshly-rebuilt rows parked unattributed.
+            //
+            // 重建路径原本不传 lagSeconds，是因为滞后游标可能停在 null
+            // （见上面这轮新加的 drainTraffic items[0] 兜底）。现在已修复，
+            // 这里也该同样加上滞后——否则包名过滤下 Clear 之后，最多
+            // PAGE_SIZE 条刚重建的行会停在未归属状态。
+            lagSeconds: activePackage ? PACKAGE_CURSOR_LAG_SECONDS : 0,
             fetchPage,
           });
           if (cancelled) return;

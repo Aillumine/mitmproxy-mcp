@@ -115,7 +115,16 @@ def test_client_port_reads_peer_port():
 
 
 def test_client_port_is_indexed_on_new_and_old_dbs(tmp_path):
-    """回填 UPDATE 按 client_port 收窄，每秒一次；没索引就是全表扫描。
+    """The backfill UPDATE narrows by client_port once a second; without an
+    index that's a full table scan.
+
+    The table caps at 2000 rows and a single body at 1 MiB, and client_port /
+    package are the last two columns, so a scan has to walk every row's body
+    overflow pages to reach them — potentially hundreds of MB of I/O. An old
+    DB adds the column via ALTER TABLE, so the index must land after that
+    migration; both paths need covering.
+
+    回填 UPDATE 按 client_port 收窄，每秒一次；没索引就是全表扫描。
 
     表最大 2000 行、单个 body 上限 1 MiB，而 client_port / package 是最后两列，
     扫描要穿过每行的 body 溢出页才读得到，代价可能是上百 MB 的 I/O。
@@ -154,7 +163,13 @@ def test_client_port_is_indexed_on_new_and_old_dbs(tmp_path):
 
 
 def test_search_matches_carry_the_package(tmp_path):
-    """搜索结果也要带 package。
+    """Search matches must carry package too.
+
+    Selecting an app in the UI filters every row by it; a search result
+    missing that column reads as "belongs to some other app" and gets hidden
+    wholesale, which looks like search itself is broken.
+
+    搜索结果也要带 package。
 
     界面上「选中应用」是对所有行生效的过滤，搜索结果缺了这一列就会被整体
     判成「别的应用的」全部隐藏，看起来像搜索坏了。

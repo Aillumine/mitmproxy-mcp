@@ -43,7 +43,13 @@ class TestInitDb:
         assert ("traffic",) in rows
 
     def test_indexes_client_port(self, addon, tmp_path):
-        """addon 先于控制服务建表，client_port 的索引也得由它建上。
+        """The addon creates the table before the control service does, so it
+        also has to leave the client_port index behind.
+
+        The attribution sampler runs a client_port UPDATE once a second;
+        without an index that's a full table scan.
+
+        addon 先于控制服务建表，client_port 的索引也得由它建上。
 
         归属采样器每秒按 client_port 跑一次 UPDATE，没索引就是全表扫描。
         """

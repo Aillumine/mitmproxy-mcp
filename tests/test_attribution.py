@@ -216,7 +216,14 @@ async def test_attributor_survives_a_broken_database(tmp_path):
 
 @pytest.mark.asyncio
 async def test_backfill_runs_off_the_event_loop(tmp_path):
-    """回填必须在工作线程里跑，不能占用事件循环。
+    """Backfill must run on a worker thread, never block the event loop.
+
+    Sampling runs once a second, and the backfill UPDATE is an unindexed full
+    table scan; running it on the event loop would stall the whole control
+    service (Web UI polling included). Every synchronous sqlite call in this
+    project goes through asyncio.to_thread, and this one has to match.
+
+    回填必须在工作线程里跑，不能占用事件循环。
 
     采样每秒一次，回填是一条无索引时会全表扫描的 UPDATE；跑在事件循环上会把
     整个控制服务（含 Web UI 轮询）卡住。项目里所有同步 sqlite 调用都走

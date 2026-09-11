@@ -98,7 +98,25 @@ export async function drainTraffic(options: {
 
   return {
     items,
-    newestId: laggedCursor(items, options.lagSeconds ?? 0) ?? options.afterId,
+    // Fall back to the oldest row in this batch when there is no lagged
+    // cursor AND no prior cursor to fall back to — otherwise the cursor
+    // stays null forever whenever every row in a batch is inside the lag
+    // window (easy once polling outpaces ~2 req/s), which permanently
+    // caps delivery at PAGE_SIZE rows per tick and starts dropping rows.
+    // `items` is sorted ascending (mergeTrafficPage), so items[0] is the
+    // oldest row here; it was already delivered, so parking the cursor on
+    // it just means the next tick re-fetches everything after it.
+    //
+    // 既没有滞后游标也没有旧游标可回退时，退化到本批最老的一行——否则
+    // 只要一批里所有行都落在滞后窗口内（轮询速率超过约 2 请求/秒就会发生），
+    // 游标就永远停在 null，把每拍下发量锁死在 PAGE_SIZE，进而开始丢行。
+    // `items` 由 mergeTrafficPage 按时间升序排列，items[0] 就是本批最老的
+    // 一行；它已经下发过了，游标停在它上面只会让下一拍重新拉取它之后的行。
+    newestId:
+      laggedCursor(items, options.lagSeconds ?? 0) ??
+      options.afterId ??
+      items[0]?.id ??
+      null,
   };
 }
 

@@ -3,26 +3,33 @@
 解析 Android /proc/net/tcp{,6}，取出本地端口集合。
 """
 
-# TCP state as printed in column 3; 01 is ESTABLISHED. Only established sockets
-# are real outbound connections to the proxy — a LISTEN (0A) socket's port is a
+# TCP state as printed in column 3; 0A is LISTEN. Excluding only LISTEN (rather
+# than allow-listing ESTABLISHED) keeps ports from states like FIN_WAIT (04/05)
+# and CLOSE_WAIT (08) — a request that just finished sits there with its real
+# uid still attached. A LISTEN socket's port is the one real risk: it's a
 # server port that may collide with another app's ephemeral source port, which
-# would attribute that app's traffic to this one.
+# would attribute that app's traffic to this one. TIME_WAIT (06) needs no
+# special casing — the kernel already reports it with uid 0, so the uid filter
+# below drops it on its own.
 #
-# 第 3 列是 TCP 状态，01 表示 ESTABLISHED。只有已建立的连接才是真正连到代理的
-# 请求——LISTEN（0A）的端口是服务端口，可能和别的应用的临时源端口撞号，
-# 撞上就会把别人的流量算到这个应用头上。
-_ESTABLISHED = "01"
+# 第 3 列是 TCP 状态，0A 表示 LISTEN。用「排除 LISTEN」而不是「只放行
+# ESTABLISHED」，是为了保留 FIN_WAIT（04/05）、CLOSE_WAIT（08）这些状态的
+# 端口——刚结束的请求会停在这些状态上，但 uid 仍然是真实的。真正的风险只有
+# LISTEN 的端口：它是服务端口，可能和别的应用的临时源端口撞号，撞上就会把
+# 别人的流量算到这个应用头上。TIME_WAIT（06）不需要特殊处理——内核上报时
+# uid 本来就是 0，下面的 uid 过滤会自动把它挡掉。
+_LISTEN = "0A"
 
 
 def parse_local_ports(text: str, uid: int | None = None) -> set[int]:
-    """Local ports held by ESTABLISHED TCP sockets in a /proc/net/tcp{,6} dump.
+    """Local ports held by non-LISTEN TCP sockets in a /proc/net/tcp{,6} dump.
 
     Column 1 is `local_address` as `HEXIP:HEXPORT` (8 hex chars for IPv4, 32 for
     IPv6); column 3 is the TCP state and column 7 the owning uid. Malformed lines
     are skipped rather than raised on — this parses whatever a phone happened to
     print, and one odd row must not take down the sampler.
 
-    从 /proc/net/tcp{,6} 的内容里取出所有处于 ESTABLISHED 状态的本地端口。
+    从 /proc/net/tcp{,6} 的内容里取出所有非 LISTEN 状态的本地端口。
 
     第 1 列 local_address 形如 `十六进制IP:十六进制端口`（IPv4 是 8 位、
     IPv6 是 32 位），第 3 列是 TCP 状态，第 7 列是所属 uid。解析不了的行直接
@@ -34,7 +41,7 @@ def parse_local_ports(text: str, uid: int | None = None) -> set[int]:
         fields = line.split()
         if len(fields) < 8:
             continue
-        if fields[3] != _ESTABLISHED:
+        if fields[3] == _LISTEN:
             continue
         local = fields[1]
         if ":" not in local:

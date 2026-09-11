@@ -53,6 +53,12 @@ MCP 启动时会自动探测或拉起本地控制服务（`mitmproxy-control`）
 - `android_reverse_proxy` / `android_reverse_proxy_remove` — **默认推荐**，免手填 Wi‑Fi
 - `android_setup_proxy` / `android_clear_proxy` / `android_get_proxy` — 同网 Wi‑Fi / 自检
 
+### 按应用过滤流量（只看某个 App 的请求）
+- `android_list_packages` — 列出第三方应用（包名 / uid / 是否前台）
+- `android_attribute_start` / `android_attribute_stop` — 开始 / 停止按包名归属（stop 不需要 serial）
+- `android_attribute_status` — 查归属状态（是否在跑、包名、采样与归属条数、最近错误）
+- 归属后用 `traffic_list(filter_package=...)` 只看该应用的请求；需手机直连本机代理（**不支持 adb reverse 模式**，reverse 下源端口是 adbd 的）
+
 ## 开始抓包：触发条件（默认方案 A）
 
 完整决策树与方案 A/B/C 见 `docs/proxy-access-and-dreaction-sync.md`。

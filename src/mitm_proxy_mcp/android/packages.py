@@ -1,4 +1,7 @@
-"""设备应用清单：包名、uid、当前前台应用。"""
+"""Device app inventory: package names, uids, and the foreground app.
+
+设备应用清单：包名、uid、当前前台应用。
+"""
 
 import re
 

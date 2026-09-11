@@ -112,3 +112,60 @@ def test_client_port_reads_peer_port():
         client_conn = None
 
     assert addon.client_port(NoPeer()) is None
+
+
+def test_client_port_is_indexed_on_new_and_old_dbs(tmp_path):
+    """回填 UPDATE 按 client_port 收窄，每秒一次；没索引就是全表扫描。
+
+    表最大 2000 行、单个 body 上限 1 MiB，而 client_port / package 是最后两列，
+    扫描要穿过每行的 body 溢出页才读得到，代价可能是上百 MB 的 I/O。
+    老库走 ALTER TABLE 补列，索引必须在补列之后建，所以两条路径都要验。
+    """
+    import sqlite3
+
+    def index_names(path):
+        conn = sqlite3.connect(str(path))
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        conn.close()
+        return names
+
+    fresh = tmp_path / "fresh.db"
+    SQLiteTrafficStore(db_path=fresh)
+    assert "idx_client_port" in index_names(fresh)
+
+    old = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(old))
+    conn.execute(
+        "CREATE TABLE traffic (id TEXT PRIMARY KEY, timestamp REAL NOT NULL,"
+        " method TEXT NOT NULL, url TEXT NOT NULL, domain TEXT NOT NULL,"
+        " status INTEGER NOT NULL, resource_type TEXT NOT NULL, size INTEGER NOT NULL,"
+        " time_ms REAL NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    SQLiteTrafficStore(db_path=old)
+    assert "idx_client_port" in index_names(old)
+
+
+def test_search_matches_carry_the_package(tmp_path):
+    """搜索结果也要带 package。
+
+    界面上「选中应用」是对所有行生效的过滤，搜索结果缺了这一列就会被整体
+    判成「别的应用的」全部隐藏，看起来像搜索坏了。
+    """
+    store = SQLiteTrafficStore(db_path=tmp_path / "t.db")
+    record = _record(1, b"needle in the body")
+    record.package = "com.example.app"
+    store.add(record)
+
+    by_url = store.search(keyword="e.com/1", search_in=["url"])
+    by_body = store.search(keyword="needle", search_in=["response_body"])
+
+    assert [m["package"] for m in by_url] == ["com.example.app"]
+    assert [m["package"] for m in by_body] == ["com.example.app"]

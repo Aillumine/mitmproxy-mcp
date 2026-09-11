@@ -95,6 +95,15 @@ def init_db():
     for name, sql_type in (("client_port", "INTEGER"), ("package", "TEXT")):
         if name not in existing:
             conn.execute(f"ALTER TABLE traffic ADD COLUMN {name} {sql_type}")
+    # After the migration, or an old DB has no client_port column yet. The
+    # attribution sampler updates rows by client_port once a second, and whoever
+    # creates the table first has to leave the index behind — here that is the
+    # addon, which opens the DB before the control service does.
+    #
+    # 放在迁移之后，否则老库还没有 client_port 列。归属采样器每秒按 client_port
+    # 更新一次，谁先建表谁就得把索引一起建上——这里是 addon，它比控制服务
+    # 更早打开数据库。
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_port ON traffic(client_port)")
     conn.commit()
 
 

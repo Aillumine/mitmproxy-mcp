@@ -73,6 +73,10 @@ description: 使用 mitmproxy MCP 抓包分析 HTTP/HTTPS 流量，mock 接口�
 | `android_reverse_proxy` | **推荐**：adb reverse + `127.0.0.1:port`（免手填 Wi‑Fi） |
 | `android_reverse_proxy_remove` | 拆除 reverse 并清除设备代理 |
 | `android_get_device_info` | 获取 Android 设备信息 |
+| `android_list_packages` | 列出设备上的第三方应用（包名 / uid / 是否前台） |
+| `android_attribute_start` | 开始把抓到的流量归属到指定包名（参数: serial, package） |
+| `android_attribute_stop` | 停止按应用归属流量（无参数，不需要 serial） |
+| `android_attribute_status` | 查询归属状态：当前包名、采样轮数、归属条数、最近错误 |
 | `get_cert_info` | 获取 CA 证书安装指南 |
 
 ## 开始抓包：触发条件与接入决策

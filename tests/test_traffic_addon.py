@@ -42,6 +42,22 @@ class TestInitDb:
 
         assert ("traffic",) in rows
 
+    def test_indexes_client_port(self, addon, tmp_path):
+        """addon 先于控制服务建表，client_port 的索引也得由它建上。
+
+        归属采样器每秒按 client_port 跑一次 UPDATE，没索引就是全表扫描。
+        """
+        conn = sqlite3.connect(str(tmp_path / "traffic.db"))
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+        conn.close()
+
+        assert "idx_client_port" in names
+
 
 class TestInferResourceType:
     """资源类型推断"""

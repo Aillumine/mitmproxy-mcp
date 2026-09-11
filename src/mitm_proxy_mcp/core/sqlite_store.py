@@ -97,6 +97,17 @@ class SQLiteTrafficStore:
                 CREATE INDEX IF NOT EXISTS idx_status ON traffic(status)
             """)
             _migrate_attribution_columns(conn)
+            # Must come after the migration — an old DB has no client_port column
+            # until then. The attribution sampler runs this UPDATE's WHERE clause
+            # once a second; without the index it is a full table scan that has to
+            # walk every row's body overflow pages to reach the trailing columns.
+            #
+            # 必须放在迁移之后——老库在迁移前还没有 client_port 列。归属采样器
+            # 每秒执行一次带这个条件的 UPDATE；没有索引就是全表扫描，而且要穿过
+            # 每一行的 body 溢出页才能读到排在最后的那两列。
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_client_port ON traffic(client_port)
+            """)
             conn.commit()
 
     def add(self, record: TrafficRecord) -> None:
@@ -387,7 +398,7 @@ class SQLiteTrafficStore:
             for field in search_in:
                 if field == "url":
                     sql = f"""
-                        SELECT id, url, method, domain, size,
+                        SELECT id, url, method, domain, size, package,
                                'url' as matched_in,
                                url as matched_content
                         FROM traffic
@@ -399,7 +410,7 @@ class SQLiteTrafficStore:
 
                 elif field == "request_headers":
                     sql = f"""
-                        SELECT id, url, method, domain, size,
+                        SELECT id, url, method, domain, size, package,
                                'request_headers' as matched_in,
                                request_headers as matched_content
                         FROM traffic
@@ -411,7 +422,7 @@ class SQLiteTrafficStore:
 
                 elif field == "request_body":
                     sql = f"""
-                        SELECT id, url, method, domain, size,
+                        SELECT id, url, method, domain, size, package,
                                'request_body' as matched_in,
                                CAST(request_body AS TEXT) as matched_content,
                                LENGTH(request_body) as field_size
@@ -424,7 +435,7 @@ class SQLiteTrafficStore:
 
                 elif field == "response_headers":
                     sql = f"""
-                        SELECT id, url, method, domain, size,
+                        SELECT id, url, method, domain, size, package,
                                'response_headers' as matched_in,
                                response_headers as matched_content
                         FROM traffic
@@ -436,7 +447,7 @@ class SQLiteTrafficStore:
 
                 elif field == "response_body":
                     sql = f"""
-                        SELECT id, url, method, domain, size,
+                        SELECT id, url, method, domain, size, package,
                                'response_body' as matched_in,
                                CAST(response_body AS TEXT) as matched_content,
                                LENGTH(response_body) as field_size
@@ -472,6 +483,13 @@ class SQLiteTrafficStore:
                         "method": row["method"],
                         "domain": row["domain"],
                         "response_size": row["size"],
+                        # The UI filters search results by package too, so the
+                        # column has to travel with every match — all five
+                        # SELECTs above carry it.
+                        #
+                        # 界面也会按包名过滤搜索结果，所以每条匹配都得带上这一列
+                        # ——上面 5 条 SELECT 都要取它。
+                        "package": row["package"],
                         "matched_in": row["matched_in"],
                         "snippet": snippet,
                         "match_position": match_position,

@@ -212,3 +212,42 @@ async def test_attributor_survives_a_broken_database(tmp_path):
 
     assert await attributor.sample_once() == 0
     assert attributor.status()["last_error"] is not None
+
+
+@pytest.mark.asyncio
+async def test_backfill_runs_off_the_event_loop(tmp_path):
+    """回填必须在工作线程里跑，不能占用事件循环。
+
+    采样每秒一次，回填是一条无索引时会全表扫描的 UPDATE；跑在事件循环上会把
+    整个控制服务（含 Web UI 轮询）卡住。项目里所有同步 sqlite 调用都走
+    asyncio.to_thread，这里也必须一致。
+    """
+    import threading
+
+    from mitm_proxy_mcp.android.attribution import PackageAttributor
+
+    class FakeAdb:
+        @staticmethod
+        async def shell(serial, command, timeout=30.0):
+            return 0, (
+                "  sl  local_address rem_address st tx rx tr tm retr uid\n"
+                "   0: 0A00020F:D431 8EFB2D22:01BB 01 00000000:00000000"
+                " 00:00000000 00000000 10234 0 1 1\n"
+            )
+
+    attributor = PackageAttributor(
+        adb=FakeAdb(),
+        serial="serial123",
+        package="com.example.app",
+        uid=10234,
+        db_path=tmp_path / "traffic.db",
+    )
+
+    seen: list[threading.Thread] = []
+    attributor._backfill_blocking = lambda ports: (  # type: ignore[method-assign]
+        seen.append(threading.current_thread()) or 0
+    )
+
+    await attributor.sample_once()
+
+    assert seen and seen[0] is not threading.main_thread()

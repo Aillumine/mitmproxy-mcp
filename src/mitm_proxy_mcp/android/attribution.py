@@ -1,4 +1,7 @@
-"""把抓到的请求按源端口归属到设备上的某个应用。"""
+"""Attribute captured requests to an on-device app by their source port.
+
+把抓到的请求按源端口归属到设备上的某个应用。
+"""
 
 import asyncio
 import sqlite3
@@ -103,12 +106,36 @@ class PackageAttributor:
         self._attributed = 0
         self._last_error: str | None = None
 
+    def _backfill_blocking(self, ports: set[int]) -> int:
+        """Open the DB, run the backfill UPDATE and close. Blocking on purpose.
+
+        Kept separate so the caller can hand it to a worker thread: every sync
+        sqlite call in this project runs off the event loop (see
+        control/dispatch.py), and this one fires once a second.
+
+        打开数据库、跑回填 UPDATE、关闭连接。这是一段阻塞代码。
+
+        单独抽出来是为了让调用方丢进工作线程：项目里所有同步 sqlite 调用都
+        不在事件循环上跑（见 control/dispatch.py），而这一段每秒执行一次。
+        """
+        conn = sqlite3.connect(str(self.db_path), timeout=10)
+        try:
+            return backfill_packages(conn, self.package, ports, time.time())
+        finally:
+            conn.close()
+
     async def sample_once(self) -> int:
-        """跑一轮采样并回填，返回本轮归属到的记录数。"""
+        """Run one sample-and-backfill round; returns rows attributed this round.
+
+        跑一轮采样并回填，返回本轮归属到的记录数。
+        """
         command = sample_command()
         try:
             code, output = await self.adb.shell(self.serial, command, timeout=10.0)
-        except Exception as error:  # adb 掉线、超时、设备重启都归到这里
+        # A dropped adb link, a timeout or a rebooting device all land here.
+        #
+        # adb 掉线、超时、设备重启都归到这里。
+        except Exception as error:
             self._last_error = str(error)
             return 0
 
@@ -134,11 +161,7 @@ class PackageAttributor:
         # 和上面 adb 失败路径一样「记录后继续」，否则一次坏采样就会
         # 把整个循环永久打断。
         try:
-            conn = sqlite3.connect(str(self.db_path), timeout=10)
-            try:
-                updated = backfill_packages(conn, self.package, ports, time.time())
-            finally:
-                conn.close()
+            updated = await asyncio.to_thread(self._backfill_blocking, ports)
         except Exception as error:
             self._last_error = str(error)
             return 0

@@ -670,7 +670,8 @@ async def android_reverse_proxy_remove(serial: str, port: int = 8888) -> dict[st
 
 
 async def android_list_packages(serial: str) -> dict[str, Any]:
-    """
+    """List third-party apps on the device, flagging the foreground one.
+
     列出设备上已安装的第三方应用，标出当前前台应用与可精确归属的应用。
 
     Args:

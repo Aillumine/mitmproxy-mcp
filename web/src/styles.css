@@ -991,3 +991,20 @@ body.resizing-split {
   cursor: pointer;
   text-decoration: underline;
 }
+
+.package-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.package-picker select {
+  max-width: 320px;
+  background: var(--bg-1);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+}

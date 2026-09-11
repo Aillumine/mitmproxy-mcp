@@ -9,6 +9,7 @@ export type TrafficRow = {
   size: number;
   time: number;
   error: string | null;
+  package?: string | null;
 };
 
 export type TrafficListPage = {

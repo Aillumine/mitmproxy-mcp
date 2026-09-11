@@ -41,6 +41,12 @@ import {
   saveTrafficFilter,
   type TrafficDisplayFilter,
 } from './trafficFilter';
+import {
+  filterRowsByPackage,
+  PACKAGE_STORAGE_KEY,
+  parsePackages,
+  type DevicePackage,
+} from './packageFilter';
 
 const POLL_FAST_MS = 1000;
 const POLL_SLOW_MS = 3000;
@@ -233,6 +239,16 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   const [filterTab, setFilterTab] = useState<'allow' | 'ignore'>('allow');
   const [patternDraft, setPatternDraft] = useState('');
   const [inspectorWidth, setInspectorWidth] = useState(INSPECTOR_MIN_WIDTH);
+  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
+  const [packages, setPackages] = useState<DevicePackage[]>([]);
+  const [activePackage, setActivePackage] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(PACKAGE_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [packageBanner, setPackageBanner] = useState<string | null>(null);
 
   const splitRef = useRef<HTMLDivElement>(null);
   // Drag the split handle to widen the inspector; clamping happens against the
@@ -592,6 +608,42 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     saveTrafficFilter(next);
   }
 
+  async function loadPackages(serial: string) {
+    const result = await callTool<{ packages?: unknown; message?: string }>(
+      'android_list_packages',
+      { serial },
+    );
+    setPackages(parsePackages(result));
+  }
+
+  async function selectPackage(serial: string, pkg: string | null) {
+    setPackageBanner(null);
+    if (!pkg) {
+      await callTool('android_attribute_stop', {});
+      setActivePackage(null);
+      try {
+        localStorage.removeItem(PACKAGE_STORAGE_KEY);
+      } catch {
+        // 私密模式下写不了，不影响本次会话
+      }
+      return;
+    }
+    const result = await callTool<{ success?: boolean; message?: string }>(
+      'android_attribute_start',
+      { serial, package: pkg },
+    );
+    if (result.success === false) {
+      setPackageBanner(result.message ?? '无法归属该应用的流量');
+      return;
+    }
+    setActivePackage(pkg);
+    try {
+      localStorage.setItem(PACKAGE_STORAGE_KEY, pkg);
+    } catch {
+      // 同上
+    }
+  }
+
   function addCurrentPattern() {
     const pattern = patternDraft.trim();
     if (!pattern) return;
@@ -611,13 +663,30 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     setFilterTab('ignore');
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await callTool<{ devices?: { serial?: string }[] }>(
+        'android_list_devices',
+        {},
+      );
+      const serial = result.devices?.[0]?.serial ?? null;
+      if (cancelled || !serial) return;
+      setDeviceSerial(serial);
+      await loadPackages(serial);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const displayRows = useMemo(
     () => filterTrafficByDisplayRules(rows, displayFilter),
     [rows, displayFilter],
   );
   const visibleRows = useMemo(
-    () => filterTrafficByKind(displayRows, kind),
-    [displayRows, kind],
+    () => filterRowsByPackage(filterTrafficByKind(displayRows, kind), activePackage),
+    [displayRows, kind, activePackage],
   );
   const kindCounts = useMemo(() => countTrafficByKind(displayRows), [displayRows]);
   const groups = useMemo(() => groupTrafficByPrefix(visibleRows), [visibleRows]);
@@ -814,6 +883,33 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
           );
         })}
       </div>
+      <div className="package-picker">
+        <label htmlFor="package-select">应用</label>
+        <select
+          id="package-select"
+          value={activePackage ?? ''}
+          onChange={(event) => {
+            const serial = deviceSerial;
+            if (!serial) return;
+            void selectPackage(serial, event.target.value || null);
+          }}
+        >
+          <option value="">全部应用</option>
+          {packages.map((item) => (
+            <option key={item.packageName} value={item.packageName}>
+              {item.packageName}
+              {item.foreground ? '（前台）' : ''}
+            </option>
+          ))}
+        </select>
+        {activePackage ? (
+          <span className="muted">只显示 {activePackage} 的请求</span>
+        ) : null}
+        <span className="muted">
+          需手机直连本机代理（不支持 adb reverse 模式）；归属比请求慢约 1 秒，未归属的请求会被一并隐藏
+        </span>
+      </div>
+      {packageBanner ? <p className="page-banner warn-banner">{packageBanner}</p> : null}
       {banner ? <p className="page-banner muted">{banner}</p> : null}
       <div className="traffic-split" ref={splitRef}>
         <div className="traffic-list">

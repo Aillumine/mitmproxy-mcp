@@ -206,6 +206,14 @@ async def _call_android_get_device_info(arguments: dict[str, Any]) -> dict[str, 
     )
 
 
+async def _call_android_list_packages(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _call_async(
+        "mitm_proxy_mcp.tools.android_tools",
+        "android_list_packages",
+        arguments["serial"],
+    )
+
+
 async def _call_android_setup_proxy(arguments: dict[str, Any]) -> dict[str, Any]:
     return await _call_async(
         "mitm_proxy_mcp.tools.android_tools",
@@ -327,6 +335,7 @@ TOOL_HANDLERS: dict[str, Handler] = {
     "mock_export": _call_mock_export,
     "mock_import": _call_mock_import,
     "android_list_devices": _call_android_list_devices,
+    "android_list_packages": _call_android_list_packages,
     "android_get_device_info": _call_android_get_device_info,
     "android_setup_proxy": _call_android_setup_proxy,
     "android_clear_proxy": _call_android_clear_proxy,

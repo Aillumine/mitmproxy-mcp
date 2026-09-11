@@ -469,6 +469,20 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="android_list_packages",
+            description="列出 Android 设备上已安装的第三方应用（包名、uid），标出当前前台应用和可精确归属流量的应用。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {
+                        "type": "string",
+                        "description": "设备序列号（从 android_list_devices 获取）",
+                    },
+                },
+                "required": ["serial"],
+            },
+        ),
+        Tool(
             name="android_setup_proxy",
             description="在 Android 设备上设置 HTTP 代理。注意：此方式对部分应用可能无效，建议在 Wi-Fi 设置中手动配置。",
             inputSchema={

@@ -7,6 +7,7 @@ from .android_tools import (
     android_get_proxy,
     android_inject_system_cert,
     android_list_devices,
+    android_list_packages,
     android_push_cert,
     android_reverse_proxy,
     android_reverse_proxy_remove,
@@ -66,6 +67,7 @@ __all__ = [
     "mock_import",
     # Android tools
     "android_list_devices",
+    "android_list_packages",
     "android_get_device_info",
     "android_setup_proxy",
     "android_clear_proxy",

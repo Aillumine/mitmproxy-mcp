@@ -8,6 +8,7 @@ from typing import Any
 
 from ..android.adb_client import ADBClient, ADBError
 from ..android.cert_injector import CertHelper
+from ..android.packages import parse_foreground_package, parse_package_uids
 from ..control.capture_context import set_capture_target
 
 # 全局 ADB 客户端实例
@@ -666,3 +667,63 @@ async def android_reverse_proxy_remove(serial: str, port: int = 8888) -> dict[st
 
     except ADBError as e:
         return {"success": False, "message": f"ADB error: {e}"}
+
+
+async def android_list_packages(serial: str) -> dict[str, Any]:
+    """
+    列出设备上已安装的第三方应用，标出当前前台应用与可精确归属的应用。
+
+    Args:
+        serial: 设备序列号（从 android_list_devices 获取）
+
+    Returns:
+        {"success": bool, "packages": [...], "count": int}
+        packages 元素：{"package": 包名, "uid": uid, "foreground": 是否前台}
+    """
+    # ponytail: 只给包名，不给应用中文名。adb 没有读 label 的命令，唯一办法是
+    # pull 出 APK 再用 aapt2 解析，几十 MB 换一个名字不值。真需要中文名时，
+    # 在这里加「pm path <pkg> → adb pull → aapt2 dump badging」。
+    #
+    # ponytail: package name only, no display label — adb cannot read it and the
+    # only route is pulling the APK for aapt2. Add that here if labels matter.
+    try:
+        adb = _get_adb()
+        code, listing = await adb.shell(serial, "pm list packages -3 -U")
+        if code != 0:
+            return {
+                "success": False,
+                "message": f"读取应用列表失败: {listing.strip()}",
+                "packages": [],
+                "count": 0,
+            }
+
+        uids = parse_package_uids(listing)
+        _, window_dump = await adb.shell(serial, "dumpsys window | grep mCurrentFocus")
+        foreground = parse_foreground_package(window_dump)
+
+        # Attribution needs only the uid, which the listing already gave us, so
+        # there is nothing to probe per package. An earlier draft ran one adb
+        # round-trip per package to test run-as; that is both useless (SELinux
+        # denies the read anyway) and slow at several hundred packages.
+        #
+        # 归属只需要 uid，而列表里已经带上了，所以不需要逐包探测。早先的草案
+        # 对每个包跑一次 adb 测 run-as，既没用（SELinux 本来就拒绝读）
+        # 又在几百个包时慢得离谱。
+        packages = [
+            {
+                "package": name,
+                "uid": uid,
+                "foreground": name == foreground,
+            }
+            for name, uid in uids.items()
+        ]
+        packages.sort(key=lambda item: (not item["foreground"], item["package"]))
+        return {"success": True, "packages": packages, "count": len(packages)}
+
+    except ADBError as e:
+        return {
+            "success": False,
+            "message": f"ADB error: {e}",
+            "packages": [],
+            "count": 0,
+        }

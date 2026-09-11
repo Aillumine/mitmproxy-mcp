@@ -24,6 +24,7 @@ def traffic_list(
     filter_url: str | None = None,
     start_time: float | None = None,
     end_time: float | None = None,
+    filter_package: str | None = None,
     after_id: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -36,6 +37,7 @@ def traffic_list(
         filter_type: 按资源类型筛选（XHR, Document, Image, Script, etc.）
         filter_status: 按状态码筛选（如 200, 4xx, 500-599）
         filter_url: 按 URL 筛选（支持正则表达式）
+        filter_package: 按应用包名筛选（需先调用 android_attribute_start）
         after_id: 仅返回该请求之后捕获的流量；请求不存在时返回全量列表
 
     Returns:
@@ -64,6 +66,7 @@ def traffic_list(
         filter_url=filter_url,
         start_time=start_time,
         end_time=end_time,
+        filter_package=filter_package,
         after_id=after_id,
     )
 

@@ -13,6 +13,11 @@ from .android_tools import (
     android_reverse_proxy_remove,
     android_setup_proxy,
 )
+from .attribution_tools import (
+    android_attribute_start,
+    android_attribute_status,
+    android_attribute_stop,
+)
 from .ios_tools import (
     ios_boot_simulator,
     ios_get_device_info,
@@ -77,6 +82,9 @@ __all__ = [
     "android_inject_system_cert",
     "android_reverse_proxy",
     "android_reverse_proxy_remove",
+    "android_attribute_start",
+    "android_attribute_stop",
+    "android_attribute_status",
     # iOS tools
     "ios_list_devices",
     "ios_list_simulators",

@@ -185,6 +185,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "仅返回此请求之后捕获的流量；请求不存在时返回未按此条件过滤的列表",
                     },
+                    "filter_package": {
+                        "type": "string",
+                        "description": "按应用包名筛选（需先调用 android_attribute_start）",
+                    },
                 },
             },
         ),
@@ -604,6 +608,28 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["serial"],
             },
+        ),
+        Tool(
+            name="android_attribute_start",
+            description="开始把抓到的流量归属到指定应用。要求设备直连代理（不能是 adb reverse 模式）。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "serial": {"type": "string", "description": "设备序列号"},
+                    "package": {"type": "string", "description": "目标应用包名"},
+                },
+                "required": ["serial", "package"],
+            },
+        ),
+        Tool(
+            name="android_attribute_stop",
+            description="停止按应用归属流量。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="android_attribute_status",
+            description="查询按应用归属的运行状态。",
+            inputSchema={"type": "object", "properties": {}},
         ),
         # iOS 工具
         Tool(

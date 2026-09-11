@@ -80,6 +80,7 @@ async def _call_traffic_list(arguments: dict[str, Any]) -> dict[str, Any]:
         filter_url=arguments.get("filter_url"),
         start_time=arguments.get("start_time"),
         end_time=arguments.get("end_time"),
+        filter_package=arguments.get("filter_package"),
         after_id=arguments.get("after_id"),
     )
 
@@ -284,6 +285,27 @@ async def _call_android_reverse_proxy_remove(
     )
 
 
+async def _call_android_attribute_start(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _call_async(
+        "mitm_proxy_mcp.tools.attribution_tools",
+        "android_attribute_start",
+        serial=arguments["serial"],
+        package=arguments["package"],
+    )
+
+
+async def _call_android_attribute_stop(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _call_async(
+        "mitm_proxy_mcp.tools.attribution_tools", "android_attribute_stop"
+    )
+
+
+async def _call_android_attribute_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await _call_async(
+        "mitm_proxy_mcp.tools.attribution_tools", "android_attribute_status"
+    )
+
+
 async def _call_ios_list_devices(arguments: dict[str, Any]) -> dict[str, Any]:
     return await _call_async("mitm_proxy_mcp.tools.ios_tools", "ios_list_devices")
 
@@ -345,6 +367,9 @@ TOOL_HANDLERS: dict[str, Handler] = {
     "android_inject_system_cert": _call_android_inject_system_cert,
     "android_reverse_proxy": _call_android_reverse_proxy,
     "android_reverse_proxy_remove": _call_android_reverse_proxy_remove,
+    "android_attribute_start": _call_android_attribute_start,
+    "android_attribute_stop": _call_android_attribute_stop,
+    "android_attribute_status": _call_android_attribute_status,
     "ios_list_devices": _call_ios_list_devices,
     "ios_list_simulators": _call_ios_list_simulators,
     "ios_list_real_devices": _call_ios_list_real_devices,

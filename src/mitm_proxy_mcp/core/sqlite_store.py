@@ -113,8 +113,8 @@ class SQLiteTrafficStore:
                         id, timestamp, method, url, domain, status,
                         resource_type, size, time_ms, request_headers,
                         request_body, request_body_size, response_headers,
-                        response_body, timing, error
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        response_body, timing, error, client_port, package
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     record.id,
                     record.timestamp,
@@ -132,6 +132,8 @@ class SQLiteTrafficStore:
                     record.response_body,
                     json.dumps(record.timing),
                     record.error,
+                    record.client_port,
+                    record.package,
                 ))
                 conn.commit()
 
@@ -161,6 +163,7 @@ class SQLiteTrafficStore:
         filter_url: str | None = None,
         start_time: float | None = None,
         end_time: float | None = None,
+        filter_package: str | None = None,
         after_id: str | None = None,
     ) -> list[TrafficRecord]:
         """
@@ -173,6 +176,7 @@ class SQLiteTrafficStore:
             filter_type: 按资源类型筛选
             filter_status: 按状态码筛选
             filter_url: 按 URL 正则匹配
+            filter_package: 按应用包名筛选
             after_id: 仅返回该记录时间戳之后的记录；不存在时忽略
 
         Returns:
@@ -193,6 +197,10 @@ class SQLiteTrafficStore:
         if filter_type:
             conditions.append("LOWER(resource_type) = LOWER(?)")
             params.append(filter_type)
+
+        if filter_package:
+            conditions.append("package = ?")
+            params.append(filter_package)
 
         if filter_status:
             status_condition = self._build_status_condition(filter_status)
@@ -321,6 +329,8 @@ class SQLiteTrafficStore:
             response_body=row["response_body"],
             timing=json.loads(row["timing"] or "{}"),
             error=row["error"],
+            client_port=row["client_port"],
+            package=row["package"],
         )
 
     def search(

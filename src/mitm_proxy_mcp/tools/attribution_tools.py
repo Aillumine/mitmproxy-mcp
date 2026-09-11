@@ -1,4 +1,7 @@
-"""按应用归属流量的启停控制。"""
+"""Start/stop control for attributing captured traffic to an app.
+
+按应用归属流量的启停控制。
+"""
 
 from pathlib import Path
 from typing import Any
@@ -23,7 +26,8 @@ def _db_path() -> Path:
 
 
 async def android_attribute_start(serial: str, package: str) -> dict[str, Any]:
-    """
+    """Start tagging captured traffic with the given package name.
+
     开始把抓到的流量归属到指定应用。
 
     Args:
@@ -65,7 +69,10 @@ async def android_attribute_start(serial: str, package: str) -> dict[str, Any]:
 
 
 async def android_attribute_stop() -> dict[str, Any]:
-    """停止按应用归属流量。"""
+    """Stop attributing traffic to a package.
+
+    停止按应用归属流量。
+    """
     global _attributor
     if _attributor is None:
         return {"success": True, "message": "当前没有在归属流量"}
@@ -76,7 +83,10 @@ async def android_attribute_stop() -> dict[str, Any]:
 
 
 async def android_attribute_status() -> dict[str, Any]:
-    """查询归属状态：正在归属哪个应用、采样了几轮、归属到多少条、最近一次错误。"""
+    """Report attribution status: current package, sample/attribute counts, last error.
+
+    查询归属状态：正在归属哪个应用、采样了几轮、归属到多少条、最近一次错误。
+    """
     if _attributor is None:
         return {"running": False, "package": None}
     return _attributor.status()

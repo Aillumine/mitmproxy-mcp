@@ -49,11 +49,14 @@ def test_ignores_header_and_garbage():
 
 
 def test_time_wait_rows_are_excluded_by_uid():
-    """实测：已关闭的连接会残留一行、状态是 TIME_WAIT(06)、uid 归 0。
+    """Observed on a real device: a closed connection leaves a row behind,
+    state TIME_WAIT(06), uid reported as 0.
 
     TIME_WAIT is no longer caught by the state filter — only LISTEN is now —
     so it depends entirely on the uid filter, and only when a target uid is
     given; the real caller (PackageAttributor) always passes one.
+
+    实测：已关闭的连接会残留一行、状态是 TIME_WAIT(06)、uid 归 0。
 
     TIME_WAIT 不再被状态过滤挡住——现在只排除 LISTEN——所以完全靠 uid 过滤
     挡住它，而且要传目标 uid 才行；真实调用方（PackageAttributor）总是会传。

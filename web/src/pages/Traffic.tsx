@@ -517,8 +517,10 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     setResBody('');
     setTruncated({ req: false, res: false });
     setDetailMissing(false);
-    setTab('Response');
-    setPayloadTab('Body');
+    // Keep the inspector tab across selections: switching rows should not throw
+    // away the Request/Headers view the user is comparing entries in.
+    //
+    // 切换行时保留右侧 tab：用户正在逐条对比 Request/Headers，不该被重置回默认。
 
     void (async () => {
       try {

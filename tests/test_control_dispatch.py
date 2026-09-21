@@ -123,12 +123,12 @@ def test_throttle_set_passes_scope_arguments(tmp_path, monkeypatch):
             {
                 "profile": "stall",
                 "domains": ["*.flowgpt.com"],
-                "heartbeat_exempt": False,
+                "keep_connection_alive": False,
                 "latency_ms": 35000,
             },
         )
     )
     assert result["success"] is True
     assert result["domains"] == ["*.flowgpt.com"]
-    assert result["heartbeat_exempt"] is False
+    assert result["keep_connection_alive"] is False
     assert result["latency_ms"] == 35000

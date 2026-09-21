@@ -103,7 +103,7 @@ def test_defaults_throttle_everything_and_spare_heartbeats():
     """向后兼容：不配白名单就限全部流量；心跳豁免默认开。"""
     config = throttle.config_for_profile("2g")
     assert config.domains == ()
-    assert config.heartbeat_exempt is True
+    assert config.keep_connection_alive is True
 
 
 def test_domains_and_heartbeat_flag_round_trip(
@@ -112,12 +112,12 @@ def test_domains_and_heartbeat_flag_round_trip(
     monkeypatch.setenv("MITMPROXY_THROTTLE_PATH", str(tmp_path / "throttle.json"))
     throttle.write_config(
         throttle.config_for_profile("2g").with_scope(
-            domains=["*.flowgpt.com", "API.Example.com"], heartbeat_exempt=False
+            domains=["*.flowgpt.com", "API.Example.com"], keep_connection_alive=False
         )
     )
     loaded = throttle.read_config()
     assert loaded.domains == ("*.flowgpt.com", "api.example.com")
-    assert loaded.heartbeat_exempt is False
+    assert loaded.keep_connection_alive is False
 
 
 def test_switching_profile_keeps_the_scope(
@@ -160,7 +160,7 @@ def test_host_matches_supports_wildcards():
 def test_to_dict_is_json_friendly():
     data = throttle.config_for_profile("2g").with_scope(domains=["a.com"]).to_dict()
     assert data["domains"] == ["a.com"]
-    assert data["heartbeat_exempt"] is True
+    assert data["keep_connection_alive"] is True
 
 
 def test_throttle_set_configures_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -168,10 +168,30 @@ def test_throttle_set_configures_scope(tmp_path: Path, monkeypatch: pytest.Monke
     from mitm_proxy_mcp.tools import throttle_tools
 
     result = throttle_tools.throttle_set(
-        "stall", domains=["*.flowgpt.com"], heartbeat_exempt=False, latency_ms=35000
+        "stall", domains=["*.flowgpt.com"], keep_connection_alive=False, latency_ms=35000
     )
     assert result["success"] is True
     assert result["domains"] == ["*.flowgpt.com"]
-    assert result["heartbeat_exempt"] is False
+    assert result["keep_connection_alive"] is False
     assert result["latency_ms"] == 35000
     assert throttle_tools.throttle_get()["domains"] == ["*.flowgpt.com"]
+
+
+def test_legacy_heartbeat_exempt_key_is_still_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """磁盘上已有的旧字段名要继续认，别让现成的配置文件失效。"""
+    import json
+
+    path = tmp_path / "throttle.json"
+    monkeypatch.setenv("MITMPROXY_THROTTLE_PATH", str(path))
+    path.write_text(json.dumps({"profile": "2g", "heartbeat_exempt": False}))
+    assert throttle.read_config().keep_connection_alive is False
+
+
+def test_keepalive_frames_follow_the_engineio_packet_types():
+    """按协议包类型判断，不用「小于 N 字节」这类模糊规则。"""
+    for payload in (b"2", b"3", b'0{"sid":"a"}', b"1", b'40{"sid":"a"}', b"41"):
+        assert throttle.is_keepalive_frame(payload) is True, payload
+    for payload in (b'42["chat",{}]', b'43[{"ok":1}]', b"", b'4"raw"'):
+        assert throttle.is_keepalive_frame(payload) is False, payload

@@ -152,11 +152,12 @@ async def list_tools() -> list[Tool]:
                             "业务请求根本发不出来"
                         ),
                     },
-                    "heartbeat_exempt": {
+                    "keep_connection_alive": {
                         "type": "boolean",
                         "description": (
-                            "是否放过 socket.io 心跳帧（Engine.IO ping/pong），默认 true。"
-                            "关掉会压出断连而不是应用层超时"
+                            "是否放过维持 WebSocket 存活的流量（upgrade 握手 + "
+                            "Engine.IO ping/pong），默认 true。"
+                            "关掉则连接会被压死，压出的是断连而不是应用层超时"
                         ),
                     },
                     "latency_ms": {

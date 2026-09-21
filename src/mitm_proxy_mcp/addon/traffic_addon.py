@@ -16,7 +16,7 @@ from mitmproxy.net import encoding as net_encoding
 from mitm_proxy_mcp.core.throttle import (
     ThrottleConfig,
     host_matches,
-    is_heartbeat_frame,
+    is_keepalive_frame,
     latency_seconds,
     read_config,
     seconds_for_bytes,
@@ -423,12 +423,38 @@ async def _sleep(seconds: float) -> None:
         await asyncio.sleep(seconds)
 
 
+def _is_websocket_upgrade(flow) -> bool:
+    """True when this request is a WebSocket handshake.
+
+    这条请求是不是 WebSocket 握手。
+    """
+    try:
+        headers = _flow_headers(getattr(flow.request, "headers", {}) or {})
+    except Exception:
+        return False
+    return is_websocket_handshake(headers)
+
+
 async def _throttle_upload(flow) -> None:
     """弱网上行：先按带宽「传完」请求体，再叠 RTT 延迟。"""
     config = throttle_applies(flow)
     if config is None:
         return
-    await _sleep(latency_seconds(config))
+    # A WebSocket upgrade is an HTTP request, so it used to pay the RTT like any
+    # other — and socket.io gives the handshake only a few seconds, so any RTT
+    # worth pressing a timeout with guarantees it never connects. Measured on a
+    # real phone at 35s RTT: every handshake took 35.2–35.5s, socket.io retried
+    # every ~25s forever, and the app failed sends with `network` instead of the
+    # `timeout` we were trying to reproduce. Only the RTT is skipped; the
+    # handshake's own bytes still pay bandwidth, which is negligible either way.
+    #
+    # WebSocket 的 upgrade 本身是个 HTTP 请求，所以原先和别的请求一样吃满 RTT——
+    # 而 socket.io 给握手的超时只有几秒，任何大到能压出超时的 RTT 都必然让它连不上。
+    # 真机在 35s RTT 下实测：每次握手耗时 35.2–35.5s，socket.io 每 ~25s 重连一次、
+    # 永远连不上，App 报的是 `network` 而不是我们要复现的 `timeout`。这里只跳过
+    # RTT，握手报文该走的带宽照走——反正它小到可以忽略。
+    if not (config.keep_connection_alive and _is_websocket_upgrade(flow)):
+        await _sleep(latency_seconds(config))
     # Only decode the request body once throttling is actually in play — doing it
     # unconditionally cost a full body decode on every single request.
     #
@@ -480,17 +506,24 @@ async def _throttle_ws_frame(
     `_WS_BURST_IDLE_CAP`），下一帧才重新付这次往返。`stall` 档位在每轮突发的
     首帧就会咬住：一次 130s 已经超过客户端所有接收超时。
     """
-    # Engine.IO's 25s heartbeat is longer than any burst gate, so every ping
-    # would pay a full RTT and socket.io would give up on the connection —
-    # turning a chat-reply timeout into a disconnect, which is the wrong failure
-    # to reproduce. Exempting them costs the ability to simulate a dead link;
-    # `heartbeat_exempt=False` buys that back.
+    # Same reason the handshake skips the RTT: a frame that only builds or holds
+    # the connection must not be what breaks it. Engine.IO's 25s heartbeat is
+    # longer than any burst gate, so every ping would pay a full RTT and
+    # socket.io would declare the connection dead; the open/connect frames that
+    # follow the handshake are even less forgiving — measured on a real phone,
+    # holding them back still produced `SocketIOException: timeout` even after
+    # the HTTP upgrade itself came back in 226ms. Either way the failure lands
+    # as a disconnect, which is the wrong one to reproduce. The cost is that a
+    # dead link can no longer be simulated; `keep_connection_alive=False` buys
+    # that back.
     #
-    # Engine.IO 的心跳间隔 25s 比任何突发阈值都长，于是每个 ping 都会付满一次
-    # RTT，socket.io 随即判定连接死亡——把「聊天回复超时」变成了「断连」，压错了
-    # 故障形态。豁免的代价是不能再模拟链路彻底死亡；要那个行为就把
-    # `heartbeat_exempt` 关掉。
-    if config.heartbeat_exempt and is_heartbeat_frame(payload):
+    # 和握手跳过 RTT 是同一个理由：只负责建立 / 维持连接的帧，不该成为压垮连接的
+    # 那一个。Engine.IO 的心跳间隔 25s 比任何突发阈值都长，每个 ping 都会付满一次
+    # RTT，socket.io 随即判定连接死亡；握手之后的 open / connect 帧更不经等——真机
+    # 实测，HTTP upgrade 已经 226ms 返回，光卡住这些帧照样刷
+    # `SocketIOException: timeout`。两种情况压出来的都是断连，压错了故障形态。
+    # 代价是不能再模拟链路彻底死亡；要那个行为就把 `keep_connection_alive` 关掉。
+    if config.keep_connection_alive and is_keepalive_frame(payload):
         return
     rtt = latency_seconds(config)
     meta = getattr(flow, "metadata", None)

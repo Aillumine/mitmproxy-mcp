@@ -258,7 +258,7 @@ def stalled(addon, monkeypatch):
     monkeypatch.setattr(
         addon,
         "get_throttle_config",
-        lambda: config_for_profile("stall").with_scope(heartbeat_exempt=False),
+        lambda: config_for_profile("stall").with_scope(keep_connection_alive=False),
     )
     return addon
 
@@ -357,8 +357,63 @@ def test_business_frames_are_still_throttled(throttled, sleeps, clock):
     assert any(abs(s - 0.02) < 1e-9 for s in sleeps)
 
 
-def test_heartbeat_exemption_can_be_turned_off(addon, monkeypatch, sleeps, clock):
+def test_keep_connection_aliveion_can_be_turned_off(addon, monkeypatch, sleeps, clock):
     """关掉豁免就回到压断连的行为，作为显式选项保留。"""
-    scoped = _scoped(addon, monkeypatch, heartbeat_exempt=False)
+    scoped = _scoped(addon, monkeypatch, keep_connection_alive=False)
     run(scoped.websocket_message(_ws_flow(b"2", from_client=False)))
     assert any(abs(s - 0.3) < 1e-9 for s in sleeps)
+
+
+def _handshake_flow(upgrade_header: str = "websocket", **kw):
+    flow = _flow(url="https://staging-ws-flow-dev.flowgpt.com/socket.io/?EIO=4", **kw)
+    flow.request.headers = {"Upgrade": upgrade_header, "Connection": "Upgrade"}
+    return flow
+
+
+def test_websocket_handshake_skips_the_rtt(addon, monkeypatch, sleeps):
+    """握手吃满 RTT 就永远连不上：socket.io 的连接超时只有几秒。"""
+    scoped = _scoped(addon, monkeypatch, domains=[])
+    run(scoped.request(_handshake_flow()))
+    assert sleeps == []
+
+
+def test_plain_request_still_pays_the_rtt(addon, monkeypatch, sleeps):
+    scoped = _scoped(addon, monkeypatch, domains=[])
+    run(scoped.request(_flow(url="https://staging-mobile-backend.flowgpt.com/v4/chat")))
+    assert any(abs(s - 0.3) < 1e-9 for s in sleeps)
+
+
+def test_handshake_header_match_is_case_insensitive(addon, monkeypatch, sleeps):
+    scoped = _scoped(addon, monkeypatch, domains=[])
+    flow = _handshake_flow()
+    flow.request.headers = {"upgrade": "WebSocket"}
+    run(scoped.request(flow))
+    assert sleeps == []
+
+
+def test_handshake_pays_the_rtt_when_keep_alive_is_off(addon, monkeypatch, sleeps):
+    """关掉豁免就回到压断连的行为：握手一起卡死。"""
+    scoped = _scoped(addon, monkeypatch, domains=[], keep_connection_alive=False)
+    run(scoped.request(_handshake_flow()))
+    assert any(abs(s - 0.3) < 1e-9 for s in sleeps)
+
+
+def test_handshake_outside_the_whitelist_is_untouched(addon, monkeypatch, sleeps):
+    scoped = _scoped(addon, monkeypatch, domains=["*.example.com"])
+    run(scoped.request(_handshake_flow()))
+    assert sleeps == []
+
+
+def test_connection_setup_frames_are_exempt(throttled, sleeps, clock):
+    """握手过了还不够：Engine.IO open 和 Socket.IO connect 被卡住照样连不上。"""
+    for payload in (b'0{"sid":"abc","pingInterval":25000}', b'40{"sid":"xyz"}', b"41"):
+        run(throttled.websocket_message(_ws_flow(payload, from_client=False)))
+    assert sleeps == []
+
+
+def test_event_and_ack_frames_are_still_throttled(throttled, sleeps, clock):
+    """业务帧照常限速——42 是 EVENT，43 是 ACK。"""
+    for payload in (b'42["chat",{"text":"hi"}]', b'43[{"ok":true}]'):
+        flow = _ws_flow(payload, from_client=True)
+        run(throttled.websocket_message(flow))
+    assert len([s for s in sleeps if abs(s - 0.02) < 1e-9]) == 2

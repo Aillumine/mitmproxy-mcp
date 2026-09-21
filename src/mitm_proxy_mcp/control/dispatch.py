@@ -66,7 +66,7 @@ async def _call_throttle_set(arguments: dict[str, Any]) -> dict[str, Any]:
         "throttle_set",
         profile=arguments["profile"],
         domains=arguments.get("domains"),
-        heartbeat_exempt=arguments.get("heartbeat_exempt"),
+        keep_connection_alive=arguments.get("keep_connection_alive"),
         latency_ms=arguments.get("latency_ms"),
     )
 

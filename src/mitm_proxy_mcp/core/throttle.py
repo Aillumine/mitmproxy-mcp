@@ -51,15 +51,18 @@ class ThrottleConfig:
     # 允许被限速的目标域名，空表示不限制。手机经代理的流量远不止被测应用，
     # 拖慢系统本身会有副作用——见 `host_matches`。
     domains: tuple[str, ...] = ()
-    # Let Engine.IO ping/pong through untouched; see `is_heartbeat_frame`.
+    # Let the traffic that merely keeps a WebSocket alive through untouched —
+    # the upgrade handshake and Engine.IO ping/pong. Both exist so the pressure
+    # lands on the application layer instead of killing the connection.
     #
-    # 放过 Engine.IO 的 ping/pong 帧；见 `is_heartbeat_frame`。
-    heartbeat_exempt: bool = True
+    # 放过只为维持 WebSocket 存活的流量——upgrade 握手和 Engine.IO 的 ping/pong。
+    # 两者是同一个意图：让压力落在应用层，而不是把连接打死。
+    keep_connection_alive: bool = True
 
     def with_scope(
         self,
         domains: Iterable[str] | None = None,
-        heartbeat_exempt: bool | None = None,
+        keep_connection_alive: bool | None = None,
     ) -> ThrottleConfig:
         """Copy with the scope settings replaced, hosts normalised to lower case.
 
@@ -68,8 +71,8 @@ class ThrottleConfig:
         changes: dict[str, Any] = {}
         if domains is not None:
             changes["domains"] = normalize_domains(domains)
-        if heartbeat_exempt is not None:
-            changes["heartbeat_exempt"] = bool(heartbeat_exempt)
+        if keep_connection_alive is not None:
+            changes["keep_connection_alive"] = bool(keep_connection_alive)
         return replace(self, **changes)
 
     @property
@@ -180,7 +183,14 @@ def read_config(path: Path | str | None = None) -> ThrottleConfig:
         )
     return config.with_scope(
         domains=data.get("domains") or (),
-        heartbeat_exempt=data.get("heartbeat_exempt", True),
+        # `heartbeat_exempt` was this flag's first name; keep reading it so a
+        # config file written before the rename still means what it said.
+        #
+        # 这个开关最早叫 `heartbeat_exempt`，继续认旧名，改名前写下的配置文件
+        # 不至于变味。
+        keep_connection_alive=data.get(
+            "keep_connection_alive", data.get("heartbeat_exempt", True)
+        ),
     )
 
 
@@ -193,7 +203,7 @@ def write_config(config: ThrottleConfig, path: Path | str | None = None) -> Path
         "download_kbps": config.download_kbps,
         "upload_kbps": config.upload_kbps,
         "domains": list(config.domains),
-        "heartbeat_exempt": config.heartbeat_exempt,
+        "keep_connection_alive": config.keep_connection_alive,
         "updated_at": time.time(),
     }
     target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -206,7 +216,7 @@ def set_profile(
     *,
     latency_ms: int | None = None,
     domains: Iterable[str] | None = None,
-    heartbeat_exempt: bool | None = None,
+    keep_connection_alive: bool | None = None,
 ) -> ThrottleConfig:
     """Switch profile, carrying the scope settings over unless they are replaced.
 
@@ -220,8 +230,10 @@ def set_profile(
     current = read_config(path)
     config = config_for_profile(profile).with_scope(
         domains=current.domains if domains is None else domains,
-        heartbeat_exempt=(
-            current.heartbeat_exempt if heartbeat_exempt is None else heartbeat_exempt
+        keep_connection_alive=(
+            current.keep_connection_alive
+            if keep_connection_alive is None
+            else keep_connection_alive
         ),
     )
     if latency_ms is not None:
@@ -238,20 +250,31 @@ def latency_seconds(config: ThrottleConfig) -> float:
     return config.latency_ms / 1000.0 if config.latency_ms > 0 else 0.0
 
 
-# Engine.IO v4 packet types: "2" is ping, "3" is pong. Exact match only — the
-# shortest business frame socket.io sends is `42[...]`, so nothing else collides.
+# Engine.IO v4 leads every frame with a packet type: 0 open, 1 close, 2 ping,
+# 3 pong, 4 message. Only type 4 carries Socket.IO, whose own type follows:
+# 40 CONNECT, 41 DISCONNECT, 42 EVENT, 43 ACK. Everything that merely builds or
+# holds the connection open is 0/1/2/3 and 40/41; the application's own traffic
+# is 42/43. Classifying by packet type keeps this exact — no "shorter than N
+# bytes" guesswork.
 #
-# Engine.IO v4 的包类型："2" 是 ping，"3" 是 pong。只做精确匹配——socket.io
-# 最短的业务帧也是 `42[...]`，不会撞上。
-_HEARTBEAT_FRAMES = (b"2", b"3")
+# Engine.IO v4 每帧开头是包类型：0 open、1 close、2 ping、3 pong、4 message。
+# 只有 4 号包装的是 Socket.IO，其类型紧随其后：40 CONNECT、41 DISCONNECT、
+# 42 EVENT、43 ACK。凡是只为建立或维持连接的都落在 0/1/2/3 和 40/41，应用自己的
+# 流量是 42/43。按包类型分类才精确——不用「小于 N 字节」这种猜法。
+_ENGINEIO_KEEPALIVE_TYPES = (b"0", b"1", b"2", b"3")
+_SOCKETIO_KEEPALIVE_TYPES = (b"40", b"41")
 
 
-def is_heartbeat_frame(payload: bytes) -> bool:
-    """True for an Engine.IO ping/pong frame.
+def is_keepalive_frame(payload: bytes) -> bool:
+    """True for a frame that only establishes or holds the connection open.
 
-    Engine.IO 的 ping/pong 帧返回 True。
+    只用于建立 / 维持连接的帧返回 True。
     """
-    return payload in _HEARTBEAT_FRAMES
+    if not payload:
+        return False
+    if payload[:1] in _ENGINEIO_KEEPALIVE_TYPES:
+        return True
+    return payload[:2] in _SOCKETIO_KEEPALIVE_TYPES
 
 
 def seconds_for_bytes(nbytes: int, bps: float) -> float:

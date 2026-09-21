@@ -108,3 +108,27 @@ async def test_invoke_android_tool_awaits_current_module_function(monkeypatch):
 
     assert result["success"] is True
     fake_list_devices.assert_awaited_once_with()
+
+
+def test_throttle_set_passes_scope_arguments(tmp_path, monkeypatch):
+    """白名单/心跳/延迟必须一路透传到工具层，否则 MCP 那头设不了。"""
+    import asyncio
+
+    monkeypatch.setenv("MITMPROXY_THROTTLE_PATH", str(tmp_path / "throttle.json"))
+    from mitm_proxy_mcp.control.dispatch import invoke_tool
+
+    result = asyncio.run(
+        invoke_tool(
+            "throttle_set",
+            {
+                "profile": "stall",
+                "domains": ["*.flowgpt.com"],
+                "heartbeat_exempt": False,
+                "latency_ms": 35000,
+            },
+        )
+    )
+    assert result["success"] is True
+    assert result["domains"] == ["*.flowgpt.com"]
+    assert result["heartbeat_exempt"] is False
+    assert result["latency_ms"] == 35000

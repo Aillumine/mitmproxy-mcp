@@ -65,6 +65,9 @@ async def _call_throttle_set(arguments: dict[str, Any]) -> dict[str, Any]:
         "mitm_proxy_mcp.tools.throttle_tools",
         "throttle_set",
         profile=arguments["profile"],
+        domains=arguments.get("domains"),
+        heartbeat_exempt=arguments.get("heartbeat_exempt"),
+        latency_ms=arguments.get("latency_ms"),
     )
 
 

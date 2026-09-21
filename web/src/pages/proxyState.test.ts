@@ -17,6 +17,8 @@ import {
   SESSION_EXPIRED_MESSAGE,
   setupProxyAllowed,
   startArgs,
+  THROTTLE_LABELS,
+  THROTTLE_PROFILES,
 } from './proxyState';
 
 describe('resolvePort', () => {
@@ -176,6 +178,12 @@ describe('throttle helpers', () => {
     expect(normalizeThrottleProfile('4G')).toBe('4g');
     expect(normalizeThrottleProfile('2g')).toBe('2g');
     expect(normalizeThrottleProfile('wifi')).toBe('off');
+    expect(normalizeThrottleProfile('stall')).toBe('stall');
+  });
+
+  it('labels every profile the backend can report', () => {
+    expect(THROTTLE_PROFILES).toContain('stall');
+    expect(THROTTLE_LABELS.stall).toBe('断流（压超时）');
   });
 
   it('formats summary for off and cellular profiles', () => {

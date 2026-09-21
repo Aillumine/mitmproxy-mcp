@@ -15,6 +15,8 @@ from mitmproxy.net import encoding as net_encoding
 
 from mitm_proxy_mcp.core.throttle import (
     ThrottleConfig,
+    host_matches,
+    is_heartbeat_frame,
     latency_seconds,
     read_config,
     seconds_for_bytes,
@@ -366,10 +368,42 @@ def is_device_client(flow) -> bool:
     return True
 
 
+def target_host(flow) -> str:
+    """Host this flow is aimed at, for CONNECT tunnels and bare SNI too.
+
+    A CONNECT request carries no path, and a failed TLS handshake carries no
+    request at all — both still have to be matched against the whitelist.
+
+    这条流的目标域名，CONNECT 隧道和只有 SNI 的情况也能取到。
+    CONNECT 请求没有路径，TLS 握手失败时连 request 都没有——两者一样要拿去
+    和白名单比对。
+    """
+    request = getattr(flow, "request", None)
+    host = getattr(request, "pretty_host", "") or getattr(request, "host", "") or ""
+    if not host:
+        host = getattr(getattr(flow, "client_conn", None), "sni", "") or ""
+    if isinstance(host, bytes):
+        host = host.decode("utf-8", "ignore")
+    return str(host or "")
+
+
 def throttle_applies(flow) -> ThrottleConfig | None:
-    """当前档位对这条流生效时返回配置，否则 None。"""
+    """当前档位对这条流生效时返回配置，否则 None。
+
+    Throttling the phone's own system traffic backfires: measured on a real
+    device, a 130s RTT on Android's captive-portal check made the OS escalate to
+    an HTTPS probe, which certificate pinning then failed, so Android declared
+    "no internet" and the app never even sent its request. Whitelisting the
+    hosts under test keeps the pressure on the app instead of the platform.
+
+    限速打在手机自己的系统流量上会适得其反：真机实测，Android 的联网检测吃到
+    130s RTT 后会升级成 HTTPS 探测，再被证书绑定挡下，于是系统判定「无互联网」，
+    App 的请求压根没发出去。把白名单限定在被测域名上，压力才落在应用而不是平台。
+    """
     config = get_throttle_config()
     if not config.enabled or not is_device_client(flow):
+        return None
+    if not host_matches(target_host(flow), config.domains):
         return None
     return config
 
@@ -405,6 +439,79 @@ async def _throttle_upload(flow) -> None:
         raw = None
     if raw:
         await _sleep(seconds_for_bytes(len(raw), config.upload_bps))
+
+
+# Per-flow, per-direction release time of the last throttled WebSocket frame.
+#
+# 每条流、每个方向上一帧被限速的 WS 帧的放行时刻。
+_WS_LAST_FRAME_KEY = "throttle_ws_last_frame"
+
+# How long a direction must be silent before its next frame counts as a new
+# round trip. It is one RTT, capped at a second: with the `stall` profile's 130s
+# RTT an uncapped gate would swallow everything short of a two-minute silence —
+# measured on a real phone, socket.io's 25s heartbeats sailed through untouched.
+# A second is far above a streamed chunk's sub-millisecond spacing and far below
+# any gap that means "the user did something new".
+#
+# 某个方向静默多久之后，下一帧才算作新一轮往返。取一个 RTT，但封顶 1 秒：
+# `stall` 档位的 RTT 有 130s，不封顶的话除非静默两分钟否则什么都算同一突发——
+# 真机实测过，socket.io 25s 的心跳就这样一路畅通。1 秒远大于流式 chunk 之间的
+# 亚毫秒间隔，也远小于任何「用户又做了一次操作」的间隔。
+_WS_BURST_IDLE_CAP = 1.0
+
+
+async def _throttle_ws_frame(
+    flow, config, payload: bytes, nbytes: int, from_client: bool
+) -> None:
+    """Pace one WebSocket frame: RTT on the first frame of a burst, then bandwidth.
+
+    A real cellular link pays the round trip once per burst; the frames streaming
+    out behind it are pipelined and only cost bandwidth. Charging every frame a
+    full RTT would make the 2g profile physically fake, while charging none (the
+    old behaviour) left socket.io traffic with no perceptible delay at all. So a
+    frame pays the RTT only when its direction has been idle (see
+    `_WS_BURST_IDLE_CAP`). The `stall` profile bites on the first frame of every
+    burst: 130s in one go already outlasts every client receive timeout.
+
+    给单个 WS 帧限速：突发的第一帧付一次 RTT，其余帧只受带宽限制。
+    真实蜂窝链路里一次往返只在突发开始时付一次，后面流式吐出来的帧是管道化到达的，
+    只受带宽限制。每帧都加满 RTT 会让 2g 档位失真；一帧都不加（旧行为）则让
+    socket.io 流量几乎感知不到延迟。因此只有某个方向静默够久（见
+    `_WS_BURST_IDLE_CAP`），下一帧才重新付这次往返。`stall` 档位在每轮突发的
+    首帧就会咬住：一次 130s 已经超过客户端所有接收超时。
+    """
+    # Engine.IO's 25s heartbeat is longer than any burst gate, so every ping
+    # would pay a full RTT and socket.io would give up on the connection —
+    # turning a chat-reply timeout into a disconnect, which is the wrong failure
+    # to reproduce. Exempting them costs the ability to simulate a dead link;
+    # `heartbeat_exempt=False` buys that back.
+    #
+    # Engine.IO 的心跳间隔 25s 比任何突发阈值都长，于是每个 ping 都会付满一次
+    # RTT，socket.io 随即判定连接死亡——把「聊天回复超时」变成了「断连」，压错了
+    # 故障形态。豁免的代价是不能再模拟链路彻底死亡；要那个行为就把
+    # `heartbeat_exempt` 关掉。
+    if config.heartbeat_exempt and is_heartbeat_frame(payload):
+        return
+    rtt = latency_seconds(config)
+    meta = getattr(flow, "metadata", None)
+    marks = meta.setdefault(_WS_LAST_FRAME_KEY, {}) if isinstance(meta, dict) else {}
+    key = "up" if from_client else "down"
+    last = marks.get(key)
+    idle_gate = min(rtt, _WS_BURST_IDLE_CAP)
+    if rtt > 0 and (last is None or time.monotonic() - last >= idle_gate):
+        await _sleep(rtt)
+    bps = config.upload_bps if from_client else config.download_bps
+    await _sleep(seconds_for_bytes(nbytes, bps))
+    # Mark when this frame was released, not when it arrived: the delay we just
+    # injected also delays the next frame's arrival, so measuring arrival-to-
+    # arrival would count our own sleep as idle time and make every frame a new
+    # burst. Measured on a real phone that turned 2g into a flat 300ms per frame
+    # (40 frames took 13.1s instead of ~0.6s).
+    #
+    # 记的是这帧放行的时刻而不是到达时刻：我们刚注入的延迟同样会推迟下一帧的到达，
+    # 用「到达到到达」量空闲，等于把自己的 sleep 算成空闲，于是每帧都成了新突发。
+    # 真机实测过：那样会让 2g 变成每帧固定 300ms（40 帧跑了 13.1s，而不是 ~0.6s）。
+    marks[key] = time.monotonic()
 
 
 def _forwarded_size(flow) -> int:
@@ -791,13 +898,18 @@ async def websocket_message(flow):
         return
     msg = messages[-1]
     content = getattr(msg, "content", b"") or b""
-    if len(content) > CAPTURE_BODY_LIMIT:
+    # Throttle on what actually crosses the wire, not on the capped copy kept
+    # for the traffic table — a frame over the cap would otherwise be free.
+    #
+    # 按真正过线的字节数限速，而不是给流量表留的那份截断副本——否则超出上限的
+    # 帧等于不要钱。
+    frame_size = len(content)
+    if frame_size > CAPTURE_BODY_LIMIT:
         content = content[:CAPTURE_BODY_LIMIT]
     from_client = bool(getattr(msg, "from_client", False))
     config = throttle_applies(flow)
     if config is not None:
-        bps = config.upload_bps if from_client else config.download_bps
-        await _sleep(seconds_for_bytes(len(content), bps))
+        await _throttle_ws_frame(flow, config, content, frame_size, from_client)
     req_headers = _flow_headers(getattr(flow.request, "headers", {}) or {})
     url = websocket_url(getattr(flow.request, "pretty_url", "") or "")
     domain = getattr(flow.request, "host", "") or ""

@@ -5,7 +5,7 @@ export const SESSION_401_LIMIT = 3;
 export const SESSION_EXPIRED_MESSAGE = '会话失效，刷新页面';
 export const DEVICE_PROXY_NOTE = '真机禁止系统代理';
 
-export const THROTTLE_PROFILES = ['off', '4g', '3g', '2g'] as const;
+export const THROTTLE_PROFILES = ['off', '4g', '3g', '2g', 'stall'] as const;
 export type ThrottleProfile = (typeof THROTTLE_PROFILES)[number];
 
 export const THROTTLE_LABELS: Record<ThrottleProfile, string> = {
@@ -13,6 +13,7 @@ export const THROTTLE_LABELS: Record<ThrottleProfile, string> = {
   '4g': '4G',
   '3g': '3G',
   '2g': '2G',
+  stall: '断流（压超时）',
 };
 
 export type ThrottleInfo = {

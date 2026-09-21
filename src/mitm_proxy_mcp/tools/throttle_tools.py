@@ -1,7 +1,8 @@
-"""弱网模拟工具：切换 4G / 3G / 2G / 关闭。"""
+"""弱网模拟工具：切换 4G / 3G / 2G / 断流 / 关闭。"""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from ..core.throttle import (
@@ -24,15 +25,29 @@ def throttle_get() -> dict[str, Any]:
     }
 
 
-def throttle_set(profile: str) -> dict[str, Any]:
+def throttle_set(
+    profile: str,
+    domains: Iterable[str] | None = None,
+    heartbeat_exempt: bool | None = None,
+    latency_ms: int | None = None,
+) -> dict[str, Any]:
     """
     设置弱网档位。
 
     Args:
-        profile: off | 4g | 3g | 2g
+        profile: off | 4g | 3g | 2g | stall
+        domains: 只限这些目标域名，支持通配（如 *.flowgpt.com）；传 [] 表示限全部。
+                 不传则沿用现有设置。
+        heartbeat_exempt: 是否放过 socket.io 心跳帧（默认放过）。
+        latency_ms: 覆盖该档位的 RTT，用来按目标超时挑值（如压 30s 超时用 35000）。
     """
     try:
-        config = set_profile(profile)
+        config = set_profile(
+            profile,
+            latency_ms=latency_ms,
+            domains=domains,
+            heartbeat_exempt=heartbeat_exempt,
+        )
     except ValueError as exc:
         return {
             "success": False,
@@ -48,6 +63,10 @@ def throttle_set(profile: str) -> dict[str, Any]:
             f"下行 {config.download_kbps} kbps，上行 {config.upload_kbps} kbps）。"
             "代理运行中立即生效，无需重启。"
         )
+    scope = "、".join(config.domains) if config.domains else "全部流量（未配白名单）"
+    message += f" 作用范围：{scope}。"
+    if not config.heartbeat_exempt:
+        message += " socket.io 心跳帧一并限速（会压出断连而不是超时）。"
     return {
         "success": True,
         "message": message,

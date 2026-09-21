@@ -127,14 +127,44 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="throttle_set",
-            description="设置弱网模拟档位。代理运行中立即生效，无需重启。可选 off（关闭）、4g、3g、2g。",
+            description=(
+                "设置弱网模拟档位。代理运行中立即生效，无需重启。"
+                "可选 off（关闭）、4g、3g、2g、stall（断流：往返 130s，专门用来压客户端超时）。"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "profile": {
                         "type": "string",
-                        "enum": ["off", "4g", "3g", "2g"],
-                        "description": "弱网档位：off=关闭，4g/3g/2g=对应蜂窝网络模拟",
+                        "enum": ["off", "4g", "3g", "2g", "stall"],
+                        "description": (
+                            "弱网档位：off=关闭，4g/3g/2g=对应蜂窝网络模拟，"
+                            "stall=断流，往返 130s、带宽 1kbps，用于压出客户端接收超时"
+                        ),
+                    },
+                    "domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "只限这些目标域名，支持通配（如 *.flowgpt.com）。"
+                            "传 [] 表示限全部流量；不传则沿用现有设置。"
+                            "强烈建议配上：限速打在系统联网检测上会让设备判定断网，"
+                            "业务请求根本发不出来"
+                        ),
+                    },
+                    "heartbeat_exempt": {
+                        "type": "boolean",
+                        "description": (
+                            "是否放过 socket.io 心跳帧（Engine.IO ping/pong），默认 true。"
+                            "关掉会压出断连而不是应用层超时"
+                        ),
+                    },
+                    "latency_ms": {
+                        "type": "integer",
+                        "description": (
+                            "覆盖该档位的 RTT，按目标超时挑值："
+                            "压 30s 超时用 35000，压 60s 用 65000，压 120s 流式用默认 130000"
+                        ),
                     },
                 },
                 "required": ["profile"],

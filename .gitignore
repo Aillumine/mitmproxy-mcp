@@ -38,3 +38,6 @@ build/
 # Frontend
 web/node_modules
 
+
+# IDE
+*.code-workspace

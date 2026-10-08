@@ -43,7 +43,7 @@ describe('mergeTrafficPage', () => {
 });
 
 describe('drainTraffic', () => {
-  it('first page reverses newest-first into chronological and does not paginate history', async () => {
+  it('first page reverses newest-first into chronological', async () => {
     const calls: Array<{ after_id?: string; offset: number }> = [];
     const result = await drainTraffic({
       afterId: null,
@@ -59,6 +59,28 @@ describe('drainTraffic', () => {
     expect(calls).toEqual([{ after_id: undefined, offset: 0 }]);
     expect(result.items.map((item) => item.id)).toEqual(['a', 'b', 'c']);
     expect(result.newestId).toBe('c');
+  });
+
+  // Regression: a page reload used to show only the newest page, which read as
+  // "refresh wiped my capture" even though every row was still in the DB.
+  //
+  // 回归：刷新页面后以前只显示最新一页，看起来像「刷新把抓包清空了」，
+  // 其实数据都还在库里。
+  it('a fresh mount paginates the whole stored history, not just the newest page', async () => {
+    const stored = Array.from({ length: 25 }, (_, i) => row(`r${i}`, i)).reverse();
+    const offsets: number[] = [];
+    const result = await drainTraffic({
+      afterId: null,
+      fetchPage: async ({ limit, offset }) => {
+        offsets.push(offset);
+        const requests = stored.slice(offset, offset + limit);
+        return { success: true, requests, returned: requests.length };
+      },
+    });
+    expect(offsets).toEqual([0, 10, 20]);
+    expect(result.items).toHaveLength(25);
+    expect(result.items[0]?.id).toBe('r0');
+    expect(result.newestId).toBe('r24');
   });
 
   it('incremental keeps after_id fixed and uses offset so middle records are not skipped', async () => {

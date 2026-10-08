@@ -52,6 +52,19 @@ import {
 const POLL_FAST_MS = 1000;
 const POLL_SLOW_MS = 3000;
 const BODY_CHUNK = 4000;
+// How far back a (re)load reads the stored capture, in minutes; 0 = everything.
+// This only narrows what the page fetches — rows stay in the local DB until Clear.
+//
+// 页面（重新）加载时回看多久的本地抓包，单位分钟；0 表示全部。
+// 只影响页面拉取范围——本地库里的数据要点 Clear 才会删。
+const TIME_RANGE_STORAGE_KEY = 'mitm.trafficTimeRangeMinutes';
+const TIME_RANGE_OPTIONS: Array<[minutes: number, label: string]> = [
+  [0, '全部时间'],
+  [5, '最近 5 分钟'],
+  [30, '最近 30 分钟'],
+  [60, '最近 1 小时'],
+  [1440, '最近 24 小时'],
+];
 
 type InspectorTab = 'Summary' | 'Request' | 'Response';
 type PayloadTab = 'Headers' | 'Body';
@@ -257,6 +270,13 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     }
   });
   const [packageBanner, setPackageBanner] = useState<string | null>(null);
+  const [rangeMinutes, setRangeMinutes] = useState(() => {
+    try {
+      return Number(localStorage.getItem(TIME_RANGE_STORAGE_KEY)) || 0;
+    } catch {
+      return 0;
+    }
+  });
 
   const splitRef = useRef<HTMLDivElement>(null);
   // Drag the split handle to widen the inspector; clamping happens against the
@@ -384,6 +404,12 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     let inFlight = false;
     let delay = POLL_FAST_MS;
     let replaceOnSuccess = true;
+    // Fixed once per poll session so rows do not drop out of the list as they
+    // age past the window; it is re-evaluated on reload or when the range changes.
+    //
+    // 每次轮询会话只算一次，避免行随时间流逝滑出窗口而从列表里消失；
+    // 刷新页面或切换时间范围时才重新计算。
+    const startTime = rangeMinutes > 0 ? Date.now() / 1000 - rangeMinutes * 60 : null;
 
     async function tick() {
       if (cancelled) return;
@@ -401,6 +427,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
           const page = await callTool<TrafficListPage & ToolEnvelope>('traffic_list', {
             ...args,
             ...(filterUrl ? { filter_url: filterUrl } : {}),
+            ...(startTime != null ? { start_time: startTime } : {}),
           });
           const checked = assertToolPage(page);
           listOk = checked.success;
@@ -506,7 +533,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
     //
     // activePackage 变化时特意重启轮询：已经在 state 里的行是归属开始之前拿到的，
     // package 还是 null，必须从库里重建列表，而不是就地过滤。
-  }, [mode, filterUrl, activePackage]);
+  }, [mode, filterUrl, activePackage, rangeMinutes]);
 
   const selectRow = useCallback((row: TrafficRow) => {
     const generation = ++generationRef.current;
@@ -835,6 +862,26 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
           }}
           aria-label="Filter URL"
         />
+        <select
+          value={rangeMinutes}
+          disabled={mode === 'search'}
+          onChange={(event) => {
+            const minutes = Number(event.target.value);
+            setRangeMinutes(minutes);
+            try {
+              localStorage.setItem(TIME_RANGE_STORAGE_KEY, String(minutes));
+            } catch {
+              // ignore quota / private mode
+            }
+          }}
+          aria-label="Time range"
+        >
+          {TIME_RANGE_OPTIONS.map(([minutes, label]) => (
+            <option key={minutes} value={minutes}>
+              {label}
+            </option>
+          ))}
+        </select>
         <input
           className="toolbar-input"
           type="search"

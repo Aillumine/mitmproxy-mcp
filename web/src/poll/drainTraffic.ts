@@ -79,7 +79,6 @@ export async function drainTraffic(options: {
   }) => Promise<TrafficListPage>;
 }): Promise<{ items: TrafficRow[]; newestId: string | null }> {
   let items: TrafficRow[] = [];
-  const firstPageOnly = options.afterId === null;
   let offset = 0;
 
   while (true) {
@@ -90,7 +89,20 @@ export async function drainTraffic(options: {
     });
     const rows = page.success ? page.requests ?? [] : [];
     items = mergeTrafficPage(items, rows);
-    if (firstPageOnly) break;
+    // A cursor-less drain (fresh mount / page reload, or the rebuild after a
+    // Clear) used to stop after the newest page, so reloading the console
+    // showed at most PAGE_SIZE rows and looked like the capture had been wiped.
+    // Only Clear may empty the list: page through the whole stored history.
+    // Rows arriving mid-drain shift offsets forward, which re-delivers rows
+    // (deduped by id above) but never skips one.
+    //
+    // 没有游标的拉取（首次挂载 / 刷新页面，或 Clear 之后的重建）以前只取最新
+    // 一页就停，刷新后最多只剩 PAGE_SIZE 条，看起来像抓包被清空了。只有 Clear
+    // 才能清空列表，所以这里要把库里的历史全部翻完。翻页途中有新行进来只会让
+    // offset 后移、导致重复下发（上面按 id 去重），不会漏行。
+    //
+    // ponytail: sequential pages of 10, up to max_size (2000) rows = 200 calls
+    // on load; raise the backend page cap for the web console if that gets slow.
     const returned = page.returned ?? rows.length;
     if (returned < PAGE_SIZE) break;
     offset += PAGE_SIZE;

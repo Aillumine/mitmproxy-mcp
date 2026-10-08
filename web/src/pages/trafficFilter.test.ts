@@ -40,6 +40,19 @@ describe('urlMatchesPattern', () => {
     expect(urlMatchesPattern('https://google.com/', '*.flowgpt.com/*')).toBe(false);
   });
 
+  it('matches host globs against path-less TLS failure rows', () => {
+    expect(
+      urlMatchesPattern('https://captive.samsungconnectivity.com', '*.samsungconnectivity.com/*'),
+    ).toBe(true);
+    expect(urlMatchesPattern('https://samsungconnectivity.com.evil.io', '*.samsungconnectivity.com/*')).toBe(false);
+  });
+
+  it('matches the apex domain with a *. host glob', () => {
+    expect(urlMatchesPattern('https://cloudflare-dns.com/', '*.cloudflare-dns.com/*')).toBe(true);
+    expect(urlMatchesPattern('https://cloudflare-dns.com', '*.cloudflare-dns.com/*')).toBe(true);
+    expect(urlMatchesPattern('https://evilcloudflare-dns.com/', '*.cloudflare-dns.com/*')).toBe(false);
+  });
+
   it('treats patterns without * as substring', () => {
     expect(urlMatchesPattern('https://a.googleapis.com/x', 'googleapis.com')).toBe(true);
     expect(urlMatchesPattern('https://flowgpt.com/x', 'googleapis.com')).toBe(false);

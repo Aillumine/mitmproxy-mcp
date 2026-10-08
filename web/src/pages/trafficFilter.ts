@@ -25,13 +25,29 @@ export function compileUrlPattern(pattern: string): RegExp | null {
     return new RegExp(escaped, 'i');
   }
   const parts = raw.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return new RegExp(`^${parts.join('.*')}$`, 'i');
+  // `*.example.com` must also cover the apex `example.com`: hostGlobFromUrl
+  // turns `https://cloudflare-dns.com/` into `*.cloudflare-dns.com/*`, which
+  // previously required a dot before the host and so never matched its own row.
+  // The label boundary (`.` or the `//` after the scheme) keeps `evilexample.com` out.
+  //
+  // `*.example.com` 也要命中裸域 `example.com`：一键生成的 `*.cloudflare-dns.com/*`
+  // 之前要求 host 前必须有 `.`，导致连生成它的那一行都匹配不上。
+  // 要求前面是 `.` 或 scheme 后的 `/`，避免误伤 `evilexample.com`。
+  const body = parts.join('.*').replace(/\.\*\\\./g, '(?:.*[/.])?');
+  return new RegExp(`^${body}$`, 'i');
 }
 
 export function urlMatchesPattern(url: string, pattern: string): boolean {
   const re = compileUrlPattern(pattern);
   if (!re) return false;
-  return re.test(url);
+  // TLS handshake failures are recorded as `https://host` with no path, so a
+  // host glob like `*.example.com/*` never matched them and those rows could
+  // not be hidden. Give a path-less URL its root `/` before testing.
+  //
+  // TLS 握手失败的行记录为 `https://host`，不带路径，导致 `*.example.com/*`
+  // 这类 host 规则匹配不上、无法忽略（如 captive.samsungconnectivity.com）。
+  // 没有路径的 URL 先补上根路径 `/` 再匹配。
+  return re.test(/^[a-z][a-z0-9+.-]*:\/\/[^/]*$/i.test(url) ? `${url}/` : url);
 }
 
 export function urlMatchesAny(url: string, patterns: string[]): boolean {

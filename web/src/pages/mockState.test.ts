@@ -111,8 +111,18 @@ describe('mergeExportBodies', () => {
     const merged = mergeExportBodies(
       [rule({ id: 'a' }), rule({ id: 'b', name: 'other', url_pattern: '/b' })],
       [
-        { name: 'empty list', url_pattern: '/api/items', method: '', response_body: '{"a":1}' },
-        { name: 'other', url_pattern: '/b', method: '', response_body: '{"b":2}' },
+        {
+          name: 'empty list',
+          url_pattern: '/api/items',
+          method: '',
+          response_body: '{"a":1}',
+        },
+        {
+          name: 'other',
+          url_pattern: '/b',
+          method: '',
+          response_body: '{"b":2}',
+        },
       ],
     );
     expect(merged[0]?.response_body).toBe('{"a":1}');
@@ -122,7 +132,13 @@ describe('mergeExportBodies', () => {
   it('keeps an existing full body', () => {
     const merged = mergeExportBodies(
       [rule({ response_body: '{"keep":1}' })],
-      [{ name: 'empty list', url_pattern: '/api/items', response_body: '{"drop":1}' }],
+      [
+        {
+          name: 'empty list',
+          url_pattern: '/api/items',
+          response_body: '{"drop":1}',
+        },
+      ],
     );
     expect(merged[0]?.response_body).toBe('{"keep":1}');
   });
@@ -132,7 +148,12 @@ describe('mergeExportBodies', () => {
       [rule({ id: 'only' })],
       [
         { name: 'noise', url_pattern: '/nope', response_body: '{}' },
-        { name: 'empty list', url_pattern: '/api/items', method: '*', response_body: '{"hit":1}' },
+        {
+          name: 'empty list',
+          url_pattern: '/api/items',
+          method: '*',
+          response_body: '{"hit":1}',
+        },
       ],
     );
     expect(merged[0]?.response_body).toBe('{"hit":1}');
@@ -211,5 +232,44 @@ describe('mergeExportBodies truncation', () => {
     );
     expect(bodyForEditor(merged[0]!).truncated).toBe(true);
     expect(hasTruncatedBodies(merged)).toBe(true);
+  });
+});
+
+describe('WebSocket rule payloads', () => {
+  it('keeps the type and configuration when editing and saving', () => {
+    const original = rule({
+      mock_type: 'ws_message',
+      response_body: '42["reply"]',
+      ws_config: {
+        direction: 'client',
+        action: 'reply',
+        message_pattern: '42["ask"]',
+      },
+    });
+    const draft = ruleToDraft(original);
+    expect(draft.mock_type).toBe('ws_message');
+    expect(draftToAddArgs(draft).ws_config).toEqual(original.ws_config);
+    expect(draftToUpdateArgs(draft).mock_type).toBe('ws_message');
+  });
+
+  it('defaults old rules to HTTP without introducing WebSocket behavior', () => {
+    const args = draftToUpdateArgs(ruleToDraft(rule()));
+    expect(args.mock_type).toBe('http');
+    expect(args.ws_config).toEqual({});
+  });
+
+  it('does not borrow the body of another rule type during export merging', () => {
+    const merged = mergeExportBodies(
+      [rule({ mock_type: 'ws_server' })],
+      [
+        {
+          name: 'empty list',
+          url_pattern: '/api/items',
+          method: '*',
+          response_body: 'wrong',
+        },
+      ],
+    );
+    expect(merged[0]?.response_body).toBeUndefined();
   });
 });

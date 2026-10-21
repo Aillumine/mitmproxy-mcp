@@ -91,6 +91,56 @@ MCP 自动拉起控制服务时**不会**带 `--open` / `--proxy`，也不会弹
 
 图片 / 视频 / 音频走流式转发，列表里仍有 URL，body 可能为空。真机抓包时**不要**勾顶栏 `setup_proxy`。
 
+### WebSocket Mock（WS / WSS）
+
+Mock 页的「规则类型」支持三种模式，规则均可启停、编辑和导入导出；通过 MCP 添加后点「刷新规则」即可看到。
+
+- **HTTP 响应**：沿用原来的固定响应行为，仅匹配普通 HTTP 请求。
+- **WebSocket 消息**（`mock_type=ws_message`）：保留真实连接，按 WS URL、消息方向和文本内容匹配，执行替换、丢弃，或丢弃原消息并向发送方回复。替换/回复文本填写在 `response_body`。
+- **WebSocket 模拟服务**（`mock_type=ws_server`）：不访问真实目标，由回环服务完成握手及连接后的定时推送。客户端消息响应通过同 URL 的消息规则配置（方向「客户端 → 服务端」、动作「向发送方回复」）。
+
+WS 规则的 URL 使用 `ws://` / `wss://`；握手里的 `http://` / `https://` 会先转换再匹配，不使用 HTTP Method 字段。URL 和消息内容均支持 contains（含 `*` 通配符）、exact、regex。每条消息只执行首条命中规则，最近更新的规则优先；注入回复跳过匹配以免递归。
+
+例如，通过 `mock_add` 创建离线 Socket.IO 服务：
+
+```json
+{
+  "name": "本地聊天 Socket.IO",
+  "url_pattern": "wss://example.com/socket.io/",
+  "response_body": "",
+  "mock_type": "ws_server",
+  "ws_config": {
+    "protocol": "socketio",
+    "messages": [{"body": "42[\"ready\",{\"mock\":true}]", "delay_ms": 100}],
+    "ping_interval_ms": 25000,
+    "ping_timeout_ms": 20000
+  }
+}
+```
+
+再创建一条收到事件后回复的规则：
+
+```json
+{
+  "name": "模拟聊天回复",
+  "url_pattern": "wss://example.com/socket.io/",
+  "response_body": "42[\"reply\",{\"text\":\"模拟回复\"}]",
+  "mock_type": "ws_message",
+  "ws_config": {
+    "direction": "client",
+    "action": "reply",
+    "message_pattern": "42[\"chat\",",
+    "message_match_type": "contains"
+  }
+}
+```
+
+原生 WebSocket 服务使用 `protocol=raw`。`messages` 中每条 `delay_ms` 是距上一条推送的延迟；Socket.IO 的推送在 namespace 连接完成后开始，自动处理 Engine.IO open、Socket.IO namespace connect 和服务端 ping / 客户端 pong；未按时 pong 会关闭连接。Socket.IO 客户端需使用 **Engine.IO v4、`transports: ['websocket']` 直连**。不支持 polling 升级、v3、二进制附件及自动业务 ACK；可用消息规则显式返回事件或 ACK 文本。
+
+消息规则仅处理 UTF-8 文本；真实连接的二进制消息透传。服务配置在握手时捕获，编辑或停用只影响新连接；消息规则在现有连接上实时生效。流量详情通过 `X-Mock-Rule` 标记命中的规则。
+
+更新代码后需重启控制服务和代理，浏览器重新加载新资源。代理现在使用 lazy 连接策略，离线 WSS 不会为了握手提前连接真实目标；手动运行 addon 时也需设置 `--set connection_strategy=lazy`。
+
 ### 真机抓包：禁止 Mac 系统代理
 
 真机（Android / iOS）抓包时，**不会也不应**设置 Mac Wi-Fi 系统代理，避免污染本机网络。推荐路径：mitm 只监听 + `android_reverse_proxy` / 设备 Wi-Fi 指向 Mac IP。

@@ -301,6 +301,10 @@ def mitmdump_args(port: int, addon_path: str) -> list[str]:
         "--listen-host", "0.0.0.0",
         "-p", str(port),
         "-s", addon_path,
+        # Lazy dialing lets offline WSS mocks work without contacting the origin.
+        #
+        # 延迟建立上游连接，让离线 WSS mock 无需接触真实服务器即可握手。
+        "--set", "connection_strategy=lazy",
         "--set", "ssl_insecure=true",
         "--set", "stream_large_bodies=1m",
     ]

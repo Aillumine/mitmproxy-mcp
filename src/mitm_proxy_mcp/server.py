@@ -311,7 +311,11 @@ async def list_tools() -> list[Tool]:
         # Mock 工具
         Tool(
             name="mock_add",
-            description="添加 mock 规则。匹配的请求将直接返回预设响应，不转发到真实服务器。规则实时生效（代理运行时无需重启）。",
+            description=(
+                "添加 HTTP 响应、WebSocket 文本消息或离线 WS/WSS 服务规则。"
+                "ws_message 保留真实连接；"
+                "ws_server 在本机模拟握手、推送和 Socket.IO v4 心跳。"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -322,6 +326,27 @@ async def list_tools() -> list[Tool]:
                     "url_pattern": {
                         "type": "string",
                         "description": "URL 匹配模式。根据 match_type 不同：contains 模式支持 * 通配符，exact 精确匹配，regex 正则匹配",
+                    },
+                    "mock_type": {
+                        "type": "string", "enum": ["http", "ws_message", "ws_server"],
+                        "description": (
+                            "规则类型，默认 http。WS 规则使用 ws:// 或 wss:// URL，"
+                            "不按 HTTP method 过滤。"
+                        ),
+                    },
+                    "ws_config": {
+                        "type": "object",
+                        "description": (
+                            "ws_message: direction(client/server/both，默认server), "
+                            "action(replace/drop/reply，默认replace), message_pattern, "
+                            "message_match_type(contains/exact/regex)。"
+                            "reply 丢弃原消息并向发送方响应 response_body。"
+                            "ws_server: protocol(raw/socketio), "
+                            "messages([{body,delay_ms}]，依次推送), "
+                            "ping_interval_ms(默认25000), ping_timeout_ms(默认20000)。"
+                            "仅文本消息；Socket.IO 仅 EIO=4 WebSocket 直连。"
+                            "服务配置对新连接生效。"
+                        ),
                     },
                     "response_body": {
                         "type": "string",
@@ -392,6 +417,27 @@ async def list_tools() -> list[Tool]:
                     "url_pattern": {
                         "type": "string",
                         "description": "新的 URL 匹配模式",
+                    },
+                    "mock_type": {
+                        "type": "string", "enum": ["http", "ws_message", "ws_server"],
+                        "description": (
+                            "规则类型，默认 http。WS 规则使用 ws:// 或 wss:// URL，"
+                            "不按 HTTP method 过滤。"
+                        ),
+                    },
+                    "ws_config": {
+                        "type": "object",
+                        "description": (
+                            "ws_message: direction(client/server/both，默认server), "
+                            "action(replace/drop/reply，默认replace), message_pattern, "
+                            "message_match_type(contains/exact/regex)。"
+                            "reply 丢弃原消息并向发送方响应 response_body。"
+                            "ws_server: protocol(raw/socketio), "
+                            "messages([{body,delay_ms}]，依次推送), "
+                            "ping_interval_ms(默认25000), ping_timeout_ms(默认20000)。"
+                            "仅文本消息；Socket.IO 仅 EIO=4 WebSocket 直连。"
+                            "服务配置对新连接生效。"
+                        ),
                     },
                     "response_body": {
                         "type": "string",

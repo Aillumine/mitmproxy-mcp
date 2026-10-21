@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn>=0.40.0",
     "httpx>=0.28.1",
+    "wsproto>=1.2.0",
 ]
 
 [project.optional-dependencies]

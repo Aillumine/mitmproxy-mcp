@@ -10,7 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
-from mitmproxy import http
+from mitmproxy import ctx, http
+
+from mitm_proxy_mcp.addon.ws_server import MockWebSocketServer, socketio_error
 from mitmproxy.net import encoding as net_encoding
 
 from mitm_proxy_mcp.core.throttle import (
@@ -52,6 +54,8 @@ _LOOPBACK_HOSTS = {"::1", "localhost", "0.0.0.0", "::"}
 
 _traffic_conn: sqlite3.Connection | None = None
 _mock_cache: dict = {"mtime": None, "rules": None}
+_ws_server = MockWebSocketServer()
+
 _throttle_cache: dict = {"mtime": None, "config": ThrottleConfig()}
 
 
@@ -241,8 +245,13 @@ def match_url(url, pattern, match_type):
                 return False
         return pattern in url
 
-def find_matching_mock(url, method):
-    """查找匹配的 mock 规则（按 mock 库 mtime 缓存，避免每个请求扫盘）。"""
+def find_matching_mock(
+    url, method, mock_type="http", *, content=None, from_client=False
+):
+    """Match HTTP or WS rules by type, caching the database until it changes.
+
+    按类型匹配 HTTP 或 WS 规则；数据库变化前复用缓存，避免逐帧查询数据库。
+    """
     if not Path(MOCK_DB_PATH).exists():
         _mock_cache["mtime"] = None
         _mock_cache["rules"] = []
@@ -263,10 +272,23 @@ def find_matching_mock(url, method):
 
         method_upper = (method or "").upper()
         for rule in rules:
+            if (rule.get("mock_type") or "http") != mock_type:
+                continue
             rule_method = rule.get("method") or ""
-            if rule_method and rule_method != method_upper:
+            if mock_type == "http" and rule_method and rule_method != method_upper:
                 continue
             if match_url(url, rule["url_pattern"], rule.get("match_type") or "contains"):
+                if mock_type != "http":
+                    rule = dict(rule)
+                    rule["ws_config"] = json.loads(rule.get("ws_config") or "{}")
+                if mock_type == "ws_message":
+                    config = rule["ws_config"]
+                    direction = "client" if from_client else "server"
+                    if config.get("direction", "server") not in (direction, "both"):
+                        continue
+                    if not match_url(content, config.get("message_pattern", ""),
+                                     config.get("message_match_type", "contains")):
+                        continue
                 return rule
         return None
     except Exception as e:
@@ -772,13 +794,30 @@ async def request(flow):
     url = flow.request.pretty_url
     method = flow.request.method
     
+    # HTTP mocks formerly consumed upgrades as ordinary GETs. Dedicated WS
+    # rules now preserve the connection and match the ws/wss URL shown in UI.
+    #
+    # 原先 HTTP mock 会把升级请求当普通 GET 截断；现在独立 WS 规则保留连接，
+    # 并使用与界面一致的 ws/wss URL 匹配。
+    if is_websocket_handshake(_flow_headers(flow.request.headers)):
+        rule = find_matching_mock(websocket_url(url), method, "ws_server")
+        if rule is not None:
+            error = socketio_error(url, rule["ws_config"])
+            if error:
+                flow.response = http.Response.make(400, error.encode("utf-8"))
+                return
+            if rule.get("delay_ms", 0):
+                await asyncio.sleep(rule["delay_ms"] / 1000)
+            await _ws_server.redirect(flow, rule)
+        return
+
     mock_rule = find_matching_mock(url, method)
     if mock_rule is None:
         return
     
     delay_ms = mock_rule.get("delay_ms", 0)
     if delay_ms > 0:
-        time.sleep(delay_ms / 1000.0)
+        await asyncio.sleep(delay_ms / 1000.0)
     
     headers = json.loads(mock_rule.get("response_headers", "{}"))
     headers["X-Mock-Rule"] = mock_rule["id"]
@@ -813,6 +852,11 @@ async def responseheaders(flow):
     出限速延迟；其余一律 tee——逐块转发的同时留一份有上限的副本给流量表。
     本来就不入库的（图片 / 音视频 / 字体）纯透传，不做任何拷贝。
     """
+    _ws_server.restore(flow)
+    metadata = getattr(flow, "metadata", {})
+    rule_id = metadata.get("ws_mock_rule") if isinstance(metadata, dict) else None
+    if rule_id and getattr(flow, "response", None) and flow.response.status_code == 101:
+        increment_mock_hit(rule_id)
     if _is_connect_tunnel(flow) or not getattr(flow, "response", None):
         return
     req_headers = _flow_headers(flow.request.headers)
@@ -923,13 +967,63 @@ async def response(flow):
         print(f"Error saving traffic: {e}")
 
 
+async def _apply_ws_mock(flow, msg):
+    # Injected replies must bypass rules or a reply can recursively reply to itself.
+    # Binary frames keep their opcode and bytes and are deliberately passed through.
+    #
+    # 注入的响应跳过规则，防止不断对自身回复；二进制帧保留原类型与字节并透传。
+    if getattr(msg, "injected", False) or getattr(msg, "type", None) != 1:
+        return
+    try:
+        content = msg.content.decode("utf-8")
+    except UnicodeDecodeError:
+        return
+    rule = find_matching_mock(
+        websocket_url(flow.request.pretty_url), "WS", "ws_message",
+        content=content, from_client=msg.from_client,
+    )
+    if rule is None:
+        return
+    if rule.get("delay_ms", 0):
+        await asyncio.sleep(rule["delay_ms"] / 1000)
+    action = rule["ws_config"].get("action", "replace")
+    if action == "replace":
+        msg.content = rule["response_body"].encode("utf-8")
+    else:
+        msg.drop()
+        if action == "reply":
+            ctx.master.commands.call("inject.websocket", flow, msg.from_client,
+                                     rule["response_body"].encode("utf-8"), True)
+    increment_mock_hit(rule["id"])
+    return rule["id"]
+
+
+def error(flow):
+    _ws_server.discard(flow)
+
+
+def websocket_end(flow):
+    _ws_server.discard(flow)
+
+
+def done():
+    _ws_server.close()
+
+
 async def websocket_message(flow):
-    """把 Socket.IO / WSS 帧写入流量表，而不是只留一条空的 HTTP 101。"""
+    """Apply text mocks before capturing the actual forwarded WS message.
+
+    先执行文本 mock，再记录实际转发的 WS 消息，避免流量详情仍显示替换前的内容。
+    """
     ws = getattr(flow, "websocket", None)
     messages = getattr(ws, "messages", None) if ws is not None else None
     if not messages:
         return
     msg = messages[-1]
+    rule_id = await _apply_ws_mock(flow, msg)
+    metadata = getattr(flow, "metadata", {})
+    if not rule_id and isinstance(metadata, dict):
+        rule_id = metadata.get("ws_mock_rule")
     content = getattr(msg, "content", b"") or b""
     # Throttle on what actually crosses the wire, not on the capped copy kept
     # for the traffic table — a frame over the cap would otherwise be free.
@@ -971,7 +1065,7 @@ async def websocket_message(flow):
                 json.dumps(req_headers),
                 content if from_client else None,
                 len(content) if from_client else 0,
-                "{}",
+                json.dumps({"X-Mock-Rule": rule_id}) if rule_id else "{}",
                 None if from_client else content,
                 None,
                 client_port(flow),

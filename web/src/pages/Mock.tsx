@@ -22,6 +22,8 @@ import {
   type MockRule,
   patchRuleEnabled,
   ruleToDraft,
+  wsConfigTemplate,
+  wsConfigError,
 } from './mockState';
 
 type ToolEnvelope = {
@@ -174,6 +176,13 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
+  function patchWsConfig(key: string, value: string) {
+    setDraft((prev) => prev && {
+      ...prev,
+      ws_config_json: JSON.stringify({ ...JSON.parse(prev.ws_config_json), [key]: value }, null, 2),
+    });
+  }
+
   async function toggleRule(rule: MockRule, enabled: boolean) {
     try {
       const result = await callTool<ToggleResult>('mock_toggle', {
@@ -189,7 +198,9 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
       }
       const nextEnabled = result.enabled ?? enabled;
       setRules((prev) => patchRuleEnabled(prev, rule.id, nextEnabled));
-      setEnabledCount((count) => count + (nextEnabled ? 1 : -1) * (rule.enabled === nextEnabled ? 0 : 1));
+      setEnabledCount(
+        (count) => count + (nextEnabled ? 1 : -1) * (rule.enabled === nextEnabled ? 0 : 1),
+      );
       setDraft((prev) => (prev?.id === rule.id ? { ...prev, enabled: nextEnabled } : prev));
       if (!bodyLoadError) setBanner(null);
     } catch (err) {
@@ -201,6 +212,10 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
     if (!draft) return;
     if (isSaveBlockedByTruncation(draft)) {
       setBanner('完整响应体未加载，无法保存。');
+      return;
+    }
+    if (wsConfigError(draft.ws_config_json)) {
+      setBanner(wsConfigError(draft.ws_config_json));
       return;
     }
     if (!draft.name.trim() || !draft.url_pattern.trim()) {
@@ -257,7 +272,9 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
     }
     if (!window.confirm(`删除规则 ${draft.name || draft.id}？`)) return;
     try {
-      const result = await callTool<ToolEnvelope>('mock_delete', { rule_id: draft.id });
+      const result = await callTool<ToolEnvelope>('mock_delete', {
+        rule_id: draft.id,
+      });
       if (typeof result.success !== 'boolean') {
         throw new Error(toolError(result, 'control unavailable'));
       }
@@ -328,12 +345,17 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
     }
   }
 
-  const invalidBody = draft ? bodyIsInvalidJson(draft.response_body) : false;
+  const invalidBody = draft?.mock_type === 'http' && bodyIsInvalidJson(draft.response_body);
   const selectedId = draft?.id ?? null;
+  const configError = draft ? wsConfigError(draft.ws_config_json) : null;
+  const config = draft && !configError ? JSON.parse(draft.ws_config_json) : {};
 
   return (
     <div className="mock">
       <div className="page-toolbar">
+        <button type="button" onClick={() => void refresh().catch((err) => setBanner(String(err)))}>
+          刷新规则
+        </button>
         <button type="button" className="primary" onClick={startNew}>
           New
         </button>
@@ -384,7 +406,7 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                 <tr>
                   <th>On</th>
                   <th>Name</th>
-                  <th>Method</th>
+                  <th>类型 / 方法</th>
                   <th>Pattern</th>
                   <th>Status</th>
                   <th>Hits</th>
@@ -421,7 +443,13 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                             className="method-dot"
                             style={{ background: methodColor(method) }}
                           />
-                          <span style={{ color: methodColor(method) }}>{method}</span>
+                          <span style={{ color: methodColor(method) }}>
+                            {rule.mock_type && rule.mock_type !== 'http'
+                              ? rule.mock_type === 'ws_server'
+                                ? 'WS 服务'
+                                : 'WS 消息'
+                              : method}
+                          </span>
                         </span>
                       </td>
                       <td className="url-cell" title={rule.url_pattern}>
@@ -429,7 +457,9 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                           <span className="url-text">{rule.url_pattern}</span>
                         </div>
                       </td>
-                      <td className={tone ? `status-${tone}` : 'muted'}>{rule.status_code}</td>
+                      <td className={tone ? `status-${tone}` : 'muted'}>
+                        {rule.mock_type === 'ws_server' ? 101 : rule.mock_type === 'ws_message' ? '—' : rule.status_code}
+                      </td>
                       <td>{rule.hit_count}</td>
                       <td>{rule.delay_ms ? `${rule.delay_ms} ms` : '—'}</td>
                     </tr>
@@ -464,6 +494,27 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                 />
               </label>
               <label className="field">
+                <span>规则类型</span>
+                <select
+                  value={draft.mock_type}
+                  onChange={(event) => {
+                    const mock_type = event.target.value as MockDraft['mock_type'];
+                    setDraft(
+                      (prev) =>
+                        prev && {
+                          ...prev,
+                          mock_type,
+                          ws_config_json: wsConfigTemplate(mock_type),
+                        },
+                    );
+                  }}
+                >
+                  <option value="http">HTTP 响应</option>
+                  <option value="ws_message">WebSocket 消息</option>
+                  <option value="ws_server">WebSocket 模拟服务</option>
+                </select>
+              </label>
+              <label className="field">
                 <span>URL pattern</span>
                 <input
                   value={draft.url_pattern}
@@ -475,7 +526,8 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                   <span>Method</span>
                   <input
                     value={draft.method}
-                    placeholder="全部"
+                    placeholder={draft.mock_type === 'http' ? '全部' : 'WebSocket 不使用此字段'}
+                    disabled={draft.mock_type !== 'http'}
                     onChange={(event) => patchDraft('method', event.target.value)}
                   />
                 </label>
@@ -498,10 +550,9 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                   <span>Status</span>
                   <input
                     type="number"
+                    disabled={draft.mock_type !== 'http'}
                     value={draft.status_code}
-                    onChange={(event) =>
-                      patchDraft('status_code', Number(event.target.value) || 0)
-                    }
+                    onChange={(event) => patchDraft('status_code', Number(event.target.value) || 0)}
                   />
                 </label>
                 <label className="field">
@@ -509,9 +560,7 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                   <input
                     type="number"
                     value={draft.delay_ms}
-                    onChange={(event) =>
-                      patchDraft('delay_ms', Number(event.target.value) || 0)
-                    }
+                    onChange={(event) => patchDraft('delay_ms', Number(event.target.value) || 0)}
                   />
                 </label>
               </div>
@@ -523,12 +572,75 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                 />
                 enabled
               </label>
+              {draft.mock_type !== 'http' ? (
+                <div className="field">
+                  <span>WebSocket 配置</span>
+                  {draft.mock_type === 'ws_message' ? (
+                    <>
+                      <div className="field-row">
+                        <label className="field"><span>消息方向</span>
+                          <select disabled={!!configError} value={config.direction ?? 'server'} onChange={(event) => patchWsConfig('direction', event.target.value)}>
+                            <option value="server">服务端 → 客户端</option>
+                            <option value="client">客户端 → 服务端</option>
+                            <option value="both">双向</option>
+                          </select>
+                        </label>
+                        <label className="field"><span>动作</span>
+                          <select disabled={!!configError} value={config.action ?? 'replace'} onChange={(event) => patchWsConfig('action', event.target.value)}>
+                            <option value="replace">替换消息</option><option value="drop">丢弃消息</option><option value="reply">向发送方回复</option>
+                          </select>
+                        </label>
+                      </div>
+                      <label className="field"><span>消息内容匹配（留空匹配全部）</span>
+                        <input disabled={!!configError} value={config.message_pattern ?? ''} onChange={(event) => patchWsConfig('message_pattern', event.target.value)} />
+                      </label>
+                      <label className="field"><span>内容匹配方式</span>
+                        <select disabled={!!configError} value={config.message_match_type ?? 'contains'} onChange={(event) => patchWsConfig('message_match_type', event.target.value)}>
+                          <option value="contains">包含 / 通配符</option><option value="exact">完全相同</option><option value="regex">正则表达式</option>
+                        </select>
+                      </label>
+                    </>
+                  ) : (
+                    <label className="field"><span>服务协议</span>
+                      <select disabled={!!configError} value={config.protocol ?? 'raw'} onChange={(event) => patchWsConfig('protocol', event.target.value)}>
+                        <option value="raw">原生 WebSocket</option><option value="socketio">Socket.IO v4（WebSocket 直连）</option>
+                      </select>
+                    </label>
+                  )}
+                  <p className="muted">
+                    {draft.mock_type === 'ws_message'
+                      ? '回复会丢弃原消息，并向发送方发送下方填写的文本。替换、丢弃和回复都只执行第一条命中的规则，最近更新的规则优先。'
+                      : 'protocol：raw 原生 WebSocket / socketio（EIO=4，WebSocket 直连）。messages 为连接后依次推送的文本，delay_ms 是距上一条的延迟。Socket.IO 在 namespace 连接后推送，并自动维护心跳；事件使用 42["事件名",数据]。客户端消息响应请另建同 URL 的 WS 消息规则，direction=client、action=reply。配置对新连接生效。'}
+                  </p>
+                  <CodeMirror
+                    value={draft.ws_config_json}
+                    theme={oneDark}
+                    extensions={[json()]}
+                    onChange={(value) => patchDraft('ws_config_json', value)}
+                  />
+                  {wsConfigError(draft.ws_config_json) ? (
+                    <p className="page-banner warn-banner">{wsConfigError(draft.ws_config_json)}</p>
+                  ) : null}
+                  <p className="muted">
+                    URL 使用 ws:// 或 wss://；消息规则仅处理文本，二进制帧透传。Socket.IO 不支持
+                    polling、v3 或二进制附件。
+                  </p>
+                </div>
+              ) : null}
               <div className="field">
-                <span>Response body</span>
+                <span>
+                  {draft.mock_type === 'ws_server'
+                    ? '响应体（模拟服务不使用此字段）'
+                    : draft.mock_type === 'ws_message'
+                      ? '替换 / 回复文本'
+                      : 'Response body'}
+                </span>
                 <div className="json-pane-toolbar">
                   <button
                     type="button"
-                    onClick={() => patchDraft('response_body', formatBody(draft.response_body).text)}
+                    onClick={() =>
+                      patchDraft('response_body', formatBody(draft.response_body).text)
+                    }
                   >
                     Format
                   </button>
@@ -549,7 +661,11 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                 <button
                   type="submit"
                   className="primary"
-                  disabled={saving || isSaveBlockedByTruncation(draft)}
+                  disabled={
+                    saving ||
+                    isSaveBlockedByTruncation(draft) ||
+                    !!wsConfigError(draft.ws_config_json)
+                  }
                 >
                   Save
                 </button>

@@ -137,6 +137,8 @@ async def _call_mock_add(arguments: dict[str, Any]) -> dict[str, Any]:
         response_headers=arguments.get("response_headers"),
         delay_ms=arguments.get("delay_ms", 0),
         enabled=arguments.get("enabled", True),
+        mock_type=arguments.get("mock_type", "http"),
+        ws_config=arguments.get("ws_config"),
     )
 
 
@@ -161,6 +163,8 @@ async def _call_mock_update(arguments: dict[str, Any]) -> dict[str, Any]:
         status_code=arguments.get("status_code"),
         response_headers=arguments.get("response_headers"),
         delay_ms=arguments.get("delay_ms"),
+        mock_type=arguments.get("mock_type"),
+        ws_config=arguments.get("ws_config"),
     )
 
 

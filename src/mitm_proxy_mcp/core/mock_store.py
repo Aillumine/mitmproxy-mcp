@@ -19,7 +19,7 @@ from typing import Any
 _ALLOWED_UPDATE_COLUMNS = frozenset({
     "name", "url_pattern", "method", "status_code",
     "response_headers", "response_body", "delay_ms",
-    "enabled", "match_type", "updated_at",
+    "enabled", "match_type", "updated_at", "mock_type", "ws_config",
 })
 
 DEFAULT_MOCK_DB_PATH = Path("/tmp/mitmproxy-mock.db")
@@ -42,11 +42,15 @@ class MockRule:
     created_at: float = 0.0
     updated_at: float = 0.0
     hit_count: int = 0
+    mock_type: str = "http"
+    ws_config: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
+            "mock_type": self.mock_type,
+            "ws_config": self.ws_config,
             "url_pattern": self.url_pattern,
             "method": self.method or "*",
             "match_type": self.match_type,
@@ -77,6 +81,10 @@ class MockStore:
 
     def _init_db(self) -> None:
         with self._get_conn() as conn:
+            # Serialize schema upgrades across control-service worker threads.
+            #
+            # 对结构升级加数据库写锁，避免并发请求重复添加同一列。
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS mock_rules (
                     id TEXT PRIMARY KEY,
@@ -94,6 +102,18 @@ class MockStore:
                     hit_count INTEGER DEFAULT 0
                 )
             """)
+            # Existing rules remain HTTP mocks after adding WebSocket support.
+            #
+            # 新增 WebSocket 类型后，已有规则仍按原来的 HTTP mock 执行。
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(mock_rules)")}
+            for name, definition in (
+                ("mock_type", "TEXT DEFAULT 'http'"),
+                ("ws_config", "TEXT DEFAULT '{}'"),
+            ):
+                if name not in columns:
+                    conn.execute(
+                        f"ALTER TABLE mock_rules ADD COLUMN {name} {definition}"
+                    )
             conn.commit()
 
     def add(self, rule: MockRule) -> None:
@@ -108,14 +128,16 @@ class MockStore:
                     INSERT OR REPLACE INTO mock_rules (
                         id, name, url_pattern, method, status_code,
                         response_headers, response_body, delay_ms,
-                        enabled, match_type, created_at, updated_at, hit_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        enabled, match_type, created_at, updated_at, hit_count,
+                        mock_type, ws_config
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     rule.id, rule.name, rule.url_pattern, rule.method,
                     rule.status_code, json.dumps(rule.response_headers),
                     rule.response_body, rule.delay_ms,
                     1 if rule.enabled else 0, rule.match_type,
-                    rule.created_at, rule.updated_at, rule.hit_count,
+                    rule.created_at, rule.updated_at, rule.hit_count, rule.mock_type,
+                    json.dumps(rule.ws_config),
                 ))
                 conn.commit()
 
@@ -150,7 +172,7 @@ class MockStore:
         for key, value in kwargs.items():
             if key not in _ALLOWED_UPDATE_COLUMNS:
                 continue  # 忽略非法列名，防止 SQL 注入
-            if key == "response_headers" and isinstance(value, dict):
+            if key in ("response_headers", "ws_config") and isinstance(value, dict):
                 value = json.dumps(value)
             if key == "enabled":
                 value = 1 if value else 0
@@ -216,6 +238,8 @@ class MockStore:
             created_at=row["created_at"] or 0.0,
             updated_at=row["updated_at"] or 0.0,
             hit_count=row["hit_count"] or 0,
+            mock_type=row["mock_type"] or "http",
+            ws_config=json.loads(row["ws_config"] or "{}"),
         )
 
     @classmethod

@@ -1,11 +1,15 @@
 import { prettyJson } from '../format';
 
+export type MockType = 'http' | 'ws_message' | 'ws_server';
+
 export type MatchType = 'contains' | 'exact' | 'regex';
 
 export type MockRule = {
   id: string;
   name: string;
   url_pattern: string;
+  mock_type?: MockType;
+  ws_config?: Record<string, unknown>;
   method: string;
   match_type: MatchType | string;
   status_code: number;
@@ -20,6 +24,8 @@ export type MockRule = {
 export type ExportRule = {
   name: string;
   url_pattern: string;
+  mock_type?: MockType;
+  ws_config?: Record<string, unknown>;
   method?: string;
   match_type?: string;
   status_code?: number;
@@ -33,6 +39,8 @@ export type MockDraft = {
   id: string | null;
   name: string;
   url_pattern: string;
+  mock_type: MockType;
+  ws_config_json: string;
   method: string;
   match_type: MatchType;
   status_code: number;
@@ -60,6 +68,8 @@ export function emptyDraft(): MockDraft {
     id: null,
     name: '',
     url_pattern: '',
+    mock_type: 'http',
+    ws_config_json: '{}',
     method: '',
     match_type: 'contains',
     status_code: 200,
@@ -88,13 +98,17 @@ export function ruleToDraft(rule: MockRule): MockDraft {
     id: rule.id,
     name: rule.name,
     url_pattern: rule.url_pattern,
+    mock_type: rule.mock_type ?? 'http',
+    ws_config_json: JSON.stringify(rule.ws_config ?? {}, null, 2),
     method: normalizeMethod(rule.method),
     match_type: asMatchType(rule.match_type),
     status_code: rule.status_code,
     delay_ms: rule.delay_ms,
     enabled: rule.enabled,
     response_body: body.text,
-    response_headers: rule.response_headers ?? { 'content-type': 'application/json' },
+    response_headers: rule.response_headers ?? {
+      'content-type': 'application/json',
+    },
     hit_count: rule.hit_count,
     bodyTruncated: body.truncated,
   };
@@ -113,6 +127,8 @@ export function draftToAddArgs(draft: MockDraft): Record<string, unknown> {
     name: draft.name,
     url_pattern: draft.url_pattern,
     response_body: draft.response_body,
+    mock_type: draft.mock_type,
+    ws_config: JSON.parse(draft.ws_config_json),
     method: draft.method,
     match_type: draft.match_type,
     status_code: draft.status_code,
@@ -128,6 +144,8 @@ export function draftToUpdateArgs(draft: MockDraft): Record<string, unknown> {
     name: draft.name,
     url_pattern: draft.url_pattern,
     response_body: draft.response_body,
+    mock_type: draft.mock_type,
+    ws_config: JSON.parse(draft.ws_config_json),
     method: draft.method,
     match_type: draft.match_type,
     status_code: draft.status_code,
@@ -137,12 +155,23 @@ export function draftToUpdateArgs(draft: MockDraft): Record<string, unknown> {
 }
 
 export function sameRuleKey(
-  a: { name: string; url_pattern: string; method?: string },
-  b: { name: string; url_pattern: string; method?: string },
+  a: {
+    name: string;
+    url_pattern: string;
+    method?: string;
+    mock_type?: MockType;
+  },
+  b: {
+    name: string;
+    url_pattern: string;
+    method?: string;
+    mock_type?: MockType;
+  },
 ): boolean {
   return (
     a.name === b.name &&
     a.url_pattern === b.url_pattern &&
+    (a.mock_type ?? 'http') === (b.mock_type ?? 'http') &&
     normalizeMethod(a.method) === normalizeMethod(b.method)
   );
 }
@@ -180,11 +209,47 @@ export function exportFileContents(rules: unknown[]): string {
   return JSON.stringify({ rules }, null, 2);
 }
 
-export function findRuleById(rules: MockRule[], id: string | null | undefined): MockRule | undefined {
+export function findRuleById(
+  rules: MockRule[],
+  id: string | null | undefined,
+): MockRule | undefined {
   if (!id) return undefined;
   return rules.find((rule) => rule.id === id);
 }
 
 export function patchRuleEnabled(rules: MockRule[], id: string, enabled: boolean): MockRule[] {
   return rules.map((rule) => (rule.id === id ? { ...rule, enabled } : rule));
+}
+
+export function wsConfigTemplate(type: MockType): string {
+  return JSON.stringify(
+    type === 'ws_message'
+      ? {
+          direction: 'server',
+          action: 'replace',
+          message_pattern: '',
+          message_match_type: 'contains',
+        }
+      : type === 'ws_server'
+        ? {
+            protocol: 'raw',
+            messages: [{ body: '{"hello":"mock"}', delay_ms: 0 }],
+            ping_interval_ms: 25000,
+            ping_timeout_ms: 20000,
+          }
+        : {},
+    null,
+    2,
+  );
+}
+
+export function wsConfigError(raw: string): string | null {
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? null
+      : 'WebSocket 配置必须是 JSON 对象';
+  } catch {
+    return 'WebSocket 配置 JSON 格式有误';
+  }
 }

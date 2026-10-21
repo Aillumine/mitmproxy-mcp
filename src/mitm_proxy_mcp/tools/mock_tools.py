@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from ..core.mock_store import MockStore, MockRule
+from ..core.ws_mock import validate_mock_values
 
 
 def _get_mock_store() -> MockStore:
@@ -27,6 +28,8 @@ def mock_add(
     response_headers: dict[str, str] | None = None,
     delay_ms: int = 0,
     enabled: bool = True,
+    mock_type: str = "http",
+    ws_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     添加 mock 规则
@@ -45,11 +48,13 @@ def mock_add(
     Returns:
         包含新规则信息的字典
     """
-    if match_type not in ("contains", "exact", "regex"):
-        return {
-            "success": False,
-            "message": f"无效的 match_type: {match_type}，支持 contains/exact/regex",
-        }
+    try:
+        validate_mock_values(
+            mock_type, ws_config if ws_config is not None else {},
+            match_type, url_pattern, delay_ms,
+        )
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
 
     store = _get_mock_store()
 
@@ -64,6 +69,8 @@ def mock_add(
         response_body=response_body,
         delay_ms=delay_ms,
         enabled=enabled,
+        mock_type=mock_type,
+        ws_config=ws_config or {},
     )
 
     store.add(rule)
@@ -106,6 +113,8 @@ def mock_update(
     status_code: int | None = None,
     response_headers: dict[str, str] | None = None,
     delay_ms: int | None = None,
+    mock_type: str | None = None,
+    ws_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     更新 mock 规则
@@ -119,7 +128,25 @@ def mock_update(
     """
     store = _get_mock_store()
 
+    rule = store.get_by_id(rule_id)
+    if rule is None:
+        return {"success": False, "message": f"规则不存在: {rule_id}"}
+    try:
+        validate_mock_values(
+            mock_type if mock_type is not None else rule.mock_type,
+            ws_config if ws_config is not None else rule.ws_config,
+            match_type if match_type is not None else rule.match_type,
+            url_pattern if url_pattern is not None else rule.url_pattern,
+            delay_ms if delay_ms is not None else rule.delay_ms,
+        )
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
     kwargs: dict[str, Any] = {}
+    if mock_type is not None:
+        kwargs["mock_type"] = mock_type
+    if ws_config is not None:
+        kwargs["ws_config"] = ws_config
     if name is not None:
         kwargs["name"] = name
     if url_pattern is not None:
@@ -251,6 +278,8 @@ def mock_export() -> dict[str, Any]:
     for r in rules:
         exported.append({
             "name": r.name,
+            "mock_type": r.mock_type,
+            "ws_config": r.ws_config,
             "url_pattern": r.url_pattern,
             "method": r.method,
             "match_type": r.match_type,
@@ -294,6 +323,24 @@ def mock_import(rules_json: str, merge: bool = False) -> dict[str, Any]:
             "message": "无效的导入格式，需要规则数组或包含 rules 字段的对象",
         }
 
+    # Reject malformed imports before clearing existing rules; previously a bad
+    # payload could silently destroy the saved mock set.
+    #
+    # 导入格式错误时先拒绝，避免原先先清空规则再报错而丢失已有配置。
+    if not isinstance(rules_data, list):
+        return {"success": False, "message": "rules 必须是数组"}
+    try:
+        for item in rules_data:
+            if not isinstance(item, dict):
+                raise ValueError("每条规则必须是对象")
+            validate_mock_values(
+                item.get("mock_type", "http"), item.get("ws_config", {}),
+                item.get("match_type", "contains"),
+                item.get("url_pattern", ""), item.get("delay_ms", 0),
+            )
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
     store = _get_mock_store()
 
     if not merge:
@@ -314,6 +361,8 @@ def mock_import(rules_json: str, merge: bool = False) -> dict[str, Any]:
                 response_body=item.get("response_body", ""),
                 delay_ms=item.get("delay_ms", 0),
                 enabled=item.get("enabled", True),
+                mock_type=item.get("mock_type", "http"),
+                ws_config=item.get("ws_config", {}),
             )
             store.add(rule)
             imported += 1

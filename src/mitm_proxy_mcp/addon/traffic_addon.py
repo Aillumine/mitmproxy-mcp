@@ -11,9 +11,10 @@ from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from mitmproxy import ctx, http
-
-from mitm_proxy_mcp.addon.ws_server import MockWebSocketServer, socketio_error
 from mitmproxy.net import encoding as net_encoding
+
+from mitm_proxy_mcp.addon.ws_faults import FaultSession, FaultTransport
+from mitm_proxy_mcp.addon.ws_server import MockWebSocketServer, socketio_error
 
 from mitm_proxy_mcp.core.throttle import (
     ThrottleConfig,
@@ -55,6 +56,7 @@ _LOOPBACK_HOSTS = {"::1", "localhost", "0.0.0.0", "::"}
 _traffic_conn: sqlite3.Connection | None = None
 _mock_cache: dict = {"mtime": None, "rules": None}
 _ws_server = MockWebSocketServer()
+_ws_fault_sessions: dict = {}
 
 _throttle_cache: dict = {"mtime": None, "config": ThrottleConfig()}
 
@@ -246,7 +248,7 @@ def match_url(url, pattern, match_type):
         return pattern in url
 
 def find_matching_mock(
-    url, method, mock_type="http", *, content=None, from_client=False
+    url, method, mock_type="http", *, content=None, from_client=False, all_matches=False
 ):
     """Match HTTP or WS rules by type, caching the database until it changes.
 
@@ -255,7 +257,7 @@ def find_matching_mock(
     if not Path(MOCK_DB_PATH).exists():
         _mock_cache["mtime"] = None
         _mock_cache["rules"] = []
-        return None
+        return [] if all_matches else None
     try:
         mtime = Path(MOCK_DB_PATH).stat().st_mtime
         rules = _mock_cache.get("rules")
@@ -270,6 +272,7 @@ def find_matching_mock(
             _mock_cache["mtime"] = mtime
             _mock_cache["rules"] = rules
 
+        matches = []
         method_upper = (method or "").upper()
         for rule in rules:
             if (rule.get("mock_type") or "http") != mock_type:
@@ -289,11 +292,13 @@ def find_matching_mock(
                     if not match_url(content, config.get("message_pattern", ""),
                                      config.get("message_match_type", "contains")):
                         continue
-                return rule
-        return None
+                if not all_matches:
+                    return rule
+                matches.append(rule)
+        return matches if all_matches else None
     except Exception as e:
         print(f"[Mock] Error reading rules: {e}")
-        return None
+        return [] if all_matches else None
 
 def increment_mock_hit(rule_id):
     """递增 mock 命中计数"""
@@ -998,15 +1003,46 @@ async def _apply_ws_mock(flow, msg):
     return rule["id"]
 
 
+def websocket_start(flow):
+    # Faults are captured per connection so timers, counters, and random seeds
+    # cannot leak across reconnects or change while a scenario is running.
+    #
+    # 故障规则按连接捕获，避免重连间串用计时、计数和随机状态，或运行中变更场景。
+    rules = find_matching_mock(
+        websocket_url(flow.request.pretty_url), "WS", "ws_fault", all_matches=True,
+    )
+    if rules:
+        _ws_fault_sessions[flow.id] = FaultSession(
+            flow, rules, FaultTransport(flow), increment_mock_hit,
+        )
+
+
+def _stop_ws_faults(flow):
+    session = _ws_fault_sessions.pop(getattr(flow, "id", None), None)
+    if session is not None:
+        session.stop()
+
+
+def client_disconnected(client):
+    for session in list(_ws_fault_sessions.values()):
+        if session.flow.client_conn.id == client.id:
+            _stop_ws_faults(session.flow)
+
+
 def error(flow):
+    _stop_ws_faults(flow)
     _ws_server.discard(flow)
 
 
 def websocket_end(flow):
+    _stop_ws_faults(flow)
     _ws_server.discard(flow)
 
 
 def done():
+    for session in list(_ws_fault_sessions.values()):
+        session.stop()
+    _ws_fault_sessions.clear()
     _ws_server.close()
 
 
@@ -1020,7 +1056,12 @@ async def websocket_message(flow):
     if not messages:
         return
     msg = messages[-1]
+    replay_ids = getattr(msg, "fault_rule_ids", ())
     rule_id = await _apply_ws_mock(flow, msg)
+    session = _ws_fault_sessions.get(getattr(flow, "id", None))
+    if session is not None and session.apply(msg):
+        return
+    rule_id = rule_id or (replay_ids[0] if replay_ids else None)
     metadata = getattr(flow, "metadata", {})
     if not rule_id and isinstance(metadata, dict):
         rule_id = metadata.get("ws_mock_rule")

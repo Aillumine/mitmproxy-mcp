@@ -761,6 +761,20 @@ button:focus-visible {
   min-height: 0;
 }
 
+/* Keep the fault editor inside the split pane even with long help or JSON text.
+ *
+ * 故障编辑器包含长说明和 JSON，固定分栏比例以免内容撑出视口并遮住规则列表。
+ */
+.mock .inspector {
+  width: min(52%, 720px);
+  min-width: 0;
+}
+
+.mock .inspector p {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .mock-table th:nth-child(1),
 .mock-table td:nth-child(1) { width: 44px; }
 .mock-table th:nth-child(2),

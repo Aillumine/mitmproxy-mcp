@@ -1,7 +1,8 @@
+import math
 import re
 from typing import Any
 
-MOCK_TYPES = ("http", "ws_message", "ws_server")
+MOCK_TYPES = ("http", "ws_message", "ws_server", "ws_fault")
 
 
 def validate_ws_config(mock_type: str, config: Any) -> None:
@@ -10,10 +11,13 @@ def validate_ws_config(mock_type: str, config: Any) -> None:
     在保存时拒绝非法动作与定时参数，避免运行中的代理读取到不可执行的规则。
     """
     if mock_type not in MOCK_TYPES:
-        raise ValueError("mock_type 必须是 http / ws_message / ws_server")
+        raise ValueError("mock_type 必须是 http / ws_message / ws_server / ws_fault")
     if not isinstance(config, dict):
         raise ValueError("ws_config 必须是对象")
     if mock_type == "http":
+        return
+    if mock_type == "ws_fault":
+        validate_fault_config(config)
         return
     if mock_type == "ws_message":
         if config.get("direction", "server") not in ("client", "server", "both"):
@@ -51,6 +55,48 @@ def validate_ws_config(mock_type: str, config: Any) -> None:
 def _milliseconds(value: Any, name: str, *, minimum: int) -> None:
     if type(value) is not int or not minimum <= value <= 86_400_000:
         raise ValueError(f"{name} 必须是 {minimum} 到 86400000 的整数")
+
+
+def validate_fault_config(config: dict) -> None:
+    """Validate timed faults before creating connection-owned scheduling tasks.
+
+    在创建连接所属的定时任务前校验故障参数，拒绝非法关闭码与无法执行的触发条件。
+    """
+    if config.get("direction", "server") not in ("client", "server", "both"):
+        raise ValueError("direction 必须是 client / server / both")
+    if config.get("action") not in ("delay", "pause", "close", "abort"):
+        raise ValueError("故障 action 必须是 delay / pause / close / abort")
+    if config.get("trigger", "messages") not in ("time", "messages"):
+        raise ValueError("trigger 必须是 time / messages")
+    _milliseconds(config.get("after_ms", 0), "after_ms", minimum=0)
+    count = config.get("after_messages", 0)
+    if type(count) is not int or not 0 <= count <= 1_000_000:
+        raise ValueError("after_messages 必须是 0 到 1000000 的整数")
+    if config.get("action") == "pause":
+        _milliseconds(config.get("duration_ms"), "duration_ms", minimum=1)
+    _milliseconds(config.get("jitter_ms", 0), "jitter_ms", minimum=0)
+    probability = config.get("probability", 1)
+    if (
+        type(probability) not in (int, float)
+        or not math.isfinite(probability)
+        or not 0 <= probability <= 1
+    ):
+        raise ValueError("probability 必须是 0 到 1 的数字")
+    if type(config.get("preserve_heartbeat", True)) is not bool:
+        raise ValueError("preserve_heartbeat 必须是布尔值")
+    if "seed" in config and (
+        type(config["seed"]) is not int or not 0 <= config["seed"] <= 4_294_967_295
+    ):
+        raise ValueError("seed 必须是 0 到 4294967295 的整数")
+    code = config.get("close_code", 1000)
+    if type(code) is not int or not (
+        code in (1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014)
+        or 3000 <= code <= 4999
+    ):
+        raise ValueError("close_code 必须是可发送的 WebSocket 关闭码")
+    reason = config.get("close_reason", "mock fault")
+    if not isinstance(reason, str) or len(reason.encode("utf-8")) > 123:
+        raise ValueError("close_reason 必须是 UTF-8 编码不超过 123 字节的字符串")
 
 
 def validate_mock_values(

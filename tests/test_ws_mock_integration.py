@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -20,15 +21,19 @@ class Client:
         self.socket = socket.create_connection(("127.0.0.1", port), timeout=5)
         self.socket.settimeout(5)
         if secure:
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit("//" + host)
+            address = host if parsed.port else f"{host}:443"
             self.socket.sendall(
-                f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode()
+                f"CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n".encode()
             )
             header = b""
             while not header.endswith(b"\r\n\r\n"):
                 header += self.socket.recv(1)
             assert b"200" in header
             self.socket = ssl._create_unverified_context().wrap_socket(
-                self.socket, server_hostname=host
+                self.socket, server_hostname=parsed.hostname
             )
         self.ws = wsproto.WSConnection(wsproto.ConnectionType.CLIENT)
         self.pending = deque()
@@ -118,7 +123,12 @@ def proxy(tmp_path):
         log.seek(0)
         output = log.read()
         log.close()
-        assert "Addon error" not in output, output
+        for marker in (
+            "Addon error",
+            "Task exception was never retrieved",
+            "mitmproxy has crashed",
+        ):
+            assert marker not in output, output
 
 
 def rule(store, name, mock_type, ws_config, *, url="offline.invalid", body=""):
@@ -243,11 +253,46 @@ def test_message_replace_and_drop_on_offline_pushes(proxy):
 
 
 @pytest.fixture
-def upstream():
+def upstream(request, tmp_path):
     import socketserver
     import threading
 
     received = []
+    secure = getattr(request, "param", False)
+    tls = None
+    if secure:
+        from datetime import datetime, timedelta
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+        now = datetime.now(UTC)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=1))
+            .not_valid_after(now + timedelta(days=1))
+            .sign(key, hashes.SHA256())
+        )
+        cert_path = tmp_path / "origin.pem"
+        key_path = tmp_path / "origin.key"
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(cert_path, key_path)
 
     class Handler(socketserver.BaseRequestHandler):
         def handle(self):
@@ -274,11 +319,15 @@ def upstream():
     class Server(socketserver.ThreadingTCPServer):
         daemon_threads = True
 
+        def get_request(self):
+            sock, address = super().get_request()
+            return (tls.wrap_socket(sock, server_side=True) if tls else sock), address
+
     server = Server(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield server.server_address[1], received
+        yield server.server_address[1], received, secure
     finally:
         server.shutdown()
         server.server_close()
@@ -287,7 +336,7 @@ def upstream():
 
 def test_live_upstream_replace_reply_binary_and_toggle(proxy, upstream):
     port, store = proxy
-    upstream_port, received = upstream
+    upstream_port, received, _ = upstream
     host = f"127.0.0.1:{upstream_port}"
     rule(
         store,
@@ -360,3 +409,232 @@ def test_http_mock_compatibility(proxy):
         assert b"200 OK" in response
         assert b"http-mocked" in response
         assert b"X-Mock-Rule: http" in response
+
+
+@pytest.mark.parametrize("secure", [False, True])
+def test_fault_delay_preserves_payload_and_order(proxy, secure):
+    port, store = proxy
+    rule(
+        store,
+        "server",
+        "ws_server",
+        {"messages": [{"body": x} for x in ("one", "two", "three")]},
+    )
+    rule(store, "delay", "ws_fault", {"action": "delay", "after_messages": 1})
+    store.update("delay", delay_ms=180)
+    client = Client(port, secure=secure)
+    try:
+        assert client.text() == "one"
+        started = time.monotonic()
+        assert client.text() == "two"
+        assert time.monotonic() - started >= 0.12
+        assert client.text() == "three"
+        assert store.get_by_id("delay").hit_count == 2
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("action", ["close", "abort"])
+@pytest.mark.parametrize("secure", [False, True])
+def test_fault_timer_closes_idle_connections(proxy, action, secure):
+    port, store = proxy
+    rule(store, "server", "ws_server", {})
+    rule(
+        store,
+        "fault",
+        "ws_fault",
+        {
+            "action": action,
+            "trigger": "time",
+            "after_ms": 150,
+            "close_code": 4001,
+            "close_reason": "test fault",
+        },
+    )
+    client = Client(port, secure=secure)
+    try:
+        if action == "close":
+            event = client.receive()
+            assert isinstance(event, events.CloseConnection)
+            assert event.code == 4001
+            assert event.reason == "test fault"
+        else:
+            assert client.socket.recv(65536) == b""
+        assert store.get_by_id("fault").hit_count == 1
+    finally:
+        client.close()
+
+
+def test_fault_close_after_exact_message_count(proxy):
+    port, store = proxy
+    rule(
+        store,
+        "server",
+        "ws_server",
+        {"messages": [{"body": x} for x in ("one", "two", "three")]},
+    )
+    rule(store, "fault", "ws_fault", {"action": "close", "after_messages": 2})
+    client = Client(port, secure=True)
+    try:
+        assert client.text() == "one"
+        assert client.text() == "two"
+        assert isinstance(client.receive(), events.CloseConnection)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("preserve", [True, False])
+def test_fault_pause_can_preserve_or_break_socketio_heartbeat(proxy, preserve):
+    port, store = proxy
+    rule(
+        store,
+        "server",
+        "ws_server",
+        {
+            "protocol": "socketio",
+            "ping_interval_ms": 40,
+            "ping_timeout_ms": 100,
+            "messages": [{"body": '42["data"]', "delay_ms": 160}],
+        },
+    )
+    rule(
+        store,
+        "pause",
+        "ws_fault",
+        {
+            "action": "pause",
+            "trigger": "time",
+            "after_ms": 120,
+            "duration_ms": 280,
+            "preserve_heartbeat": preserve,
+        },
+    )
+    client = Client(port, "/socket.io/?EIO=4&transport=websocket", secure=True)
+    try:
+        assert client.text().startswith("0")
+        client.send("40")
+        assert client.text().startswith("40")
+        started = time.monotonic()
+        pings = 0
+        while True:
+            event = client.receive()
+            if isinstance(event, events.CloseConnection):
+                assert not preserve
+                assert event.reason == "ping timeout"
+                break
+            assert isinstance(event, events.TextMessage)
+            if event.data == "2":
+                pings += 1
+                client.send("3")
+            else:
+                assert preserve
+                assert event.data == '42["data"]'
+                assert time.monotonic() - started >= 0.32
+                assert pings >= 3
+                break
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("action", ["pause", "close", "abort"])
+@pytest.mark.parametrize("upstream", [False, True], indirect=True)
+def test_faults_apply_to_live_upstream(proxy, upstream, action):
+    port, store = proxy
+    upstream_port, _, secure = upstream
+    host = f"127.0.0.1:{upstream_port}"
+    config = {
+        "action": action,
+        "trigger": "time",
+        "after_ms": 60,
+        "duration_ms": 150,
+        "close_code": 4002,
+        "close_reason": "live fault",
+    }
+    scheme = "wss" if secure else "ws"
+    rule(store, "fault", "ws_fault", config, url=f"{scheme}://{host}/ws")
+    client = Client(port, host=host, secure=secure)
+    try:
+        assert client.text() == "original"
+        if action == "pause":
+            time.sleep(0.1)
+            client.send("echo-after-pause")
+            started = time.monotonic()
+            assert client.text() == "echo-after-pause"
+            assert time.monotonic() - started >= 0.06
+            client.send("resumed")
+            assert client.text() == "resumed"
+        elif action == "close":
+            event = client.receive()
+            assert isinstance(event, events.CloseConnection)
+            assert event.code == 4002
+        else:
+            assert client.socket.recv(65536) == b""
+    finally:
+        client.close()
+
+
+def test_fault_delay_then_counted_close_drains_first_messages(proxy):
+    port, store = proxy
+    rule(
+        store,
+        "server",
+        "ws_server",
+        {"messages": [{"body": x} for x in ("one", "two", "three")]},
+    )
+    rule(store, "delay", "ws_fault", {"action": "delay"})
+    store.update("delay", delay_ms=100)
+    rule(store, "close", "ws_fault", {"action": "close", "after_messages": 2})
+    for _ in range(2):
+        client = Client(port, secure=True)
+        try:
+            assert client.text() == "one"
+            assert client.text() == "two"
+            assert isinstance(client.receive(), events.CloseConnection)
+        finally:
+            client.close()
+    assert store.get_by_id("close").hit_count == 2
+
+
+@pytest.mark.parametrize("action", ["close", "abort"])
+@pytest.mark.parametrize("secure", [False, True])
+def test_fault_zero_count_closes_after_successful_upgrade(proxy, action, secure):
+    port, store = proxy
+    rule(store, "server", "ws_server", {})
+    rule(store, "fault", "ws_fault", {"action": action, "after_messages": 0})
+    client = Client(port, secure=secure)
+    try:
+        if action == "close":
+            assert isinstance(client.receive(), events.CloseConnection)
+        else:
+            assert client.socket.recv(65536) == b""
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("upstream", [False, True], indirect=True)
+def test_fault_binary_messages_survive_both_direction_delay(proxy, upstream):
+    port, store = proxy
+    origin_port, _, secure = upstream
+    host = f"127.0.0.1:{origin_port}"
+    scheme = "wss" if secure else "ws"
+    rule(
+        store,
+        "fault",
+        "ws_fault",
+        {"action": "delay", "direction": "both"},
+        url=f"{scheme}://{host}/ws",
+    )
+    store.update("fault", delay_ms=70)
+    client = Client(port, host=host, secure=secure)
+    try:
+        assert client.text() == "original"
+        started = time.monotonic()
+        client.socket.sendall(
+            client.ws.send(events.BytesMessage(data=b"\x00\xffpayload"))
+        )
+        event = client.receive()
+        assert isinstance(event, events.BytesMessage)
+        assert event.data == b"\x00\xffpayload"
+        assert time.monotonic() - started >= 0.10
+    finally:
+        client.close()

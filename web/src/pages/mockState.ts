@@ -1,6 +1,6 @@
 import { prettyJson } from '../format';
 
-export type MockType = 'http' | 'ws_message' | 'ws_server';
+export type MockType = 'http' | 'ws_message' | 'ws_server' | 'ws_fault';
 
 export type MatchType = 'contains' | 'exact' | 'regex';
 
@@ -222,22 +222,39 @@ export function patchRuleEnabled(rules: MockRule[], id: string, enabled: boolean
 }
 
 export function wsConfigTemplate(type: MockType): string {
+  // New fault rules reproduce a mid-stream pause; legacy rules still default to HTTP.
+  //
+  // 新故障规则默认复现流式过程中暂停，已有规则仍按原来的 HTTP 默认值处理。
   return JSON.stringify(
-    type === 'ws_message'
+    type === 'ws_fault'
       ? {
           direction: 'server',
-          action: 'replace',
-          message_pattern: '',
-          message_match_type: 'contains',
+          action: 'pause',
+          trigger: 'messages',
+          after_messages: 5,
+          after_ms: 10000,
+          duration_ms: 10000,
+          jitter_ms: 0,
+          probability: 1,
+          preserve_heartbeat: true,
+          close_code: 1000,
+          close_reason: 'mock fault',
         }
-      : type === 'ws_server'
+      : type === 'ws_message'
         ? {
-            protocol: 'raw',
-            messages: [{ body: '{"hello":"mock"}', delay_ms: 0 }],
-            ping_interval_ms: 25000,
-            ping_timeout_ms: 20000,
+            direction: 'server',
+            action: 'replace',
+            message_pattern: '',
+            message_match_type: 'contains',
           }
-        : {},
+        : type === 'ws_server'
+          ? {
+              protocol: 'raw',
+              messages: [{ body: '{"hello":"mock"}', delay_ms: 0 }],
+              ping_interval_ms: 25000,
+              ping_timeout_ms: 20000,
+            }
+          : {},
     null,
     2,
   );

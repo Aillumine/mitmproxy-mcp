@@ -16,6 +16,8 @@ import {
   patchRuleEnabled,
   ruleToDraft,
   type MockRule,
+  wsConfigTemplate,
+  wsConfigError,
 } from './mockState';
 
 function rule(extras: Partial<MockRule> = {}): MockRule {
@@ -271,5 +273,41 @@ describe('WebSocket rule payloads', () => {
       ],
     );
     expect(merged[0]?.response_body).toBeUndefined();
+  });
+});
+
+describe('WebSocket fault rules', () => {
+  it('provides a pause-after-five template that survives save and edit', () => {
+    const raw = wsConfigTemplate('ws_fault');
+    expect(wsConfigError(raw)).toBeNull();
+    const config = JSON.parse(raw);
+    expect(config.action).toBe('pause');
+    expect(config.after_messages).toBe(5);
+    expect(config.duration_ms).toBe(10000);
+    const draft = { ...emptyDraft(), mock_type: 'ws_fault' as const, ws_config_json: raw };
+    expect(draftToAddArgs(draft).ws_config).toEqual(config);
+    expect(draftToUpdateArgs(draft).mock_type).toBe('ws_fault');
+    expect(ruleToDraft(rule({ mock_type: 'ws_fault', ws_config: config })).ws_config_json).toBe(
+      raw,
+    );
+  });
+
+  it('keeps fault types distinct from message-body exports', () => {
+    const merged = mergeExportBodies(
+      [rule({ mock_type: 'ws_fault' })],
+      [
+        {
+          name: 'empty list',
+          url_pattern: '/api/items',
+          mock_type: 'ws_message',
+          response_body: 'wrong',
+        },
+      ],
+    );
+    expect(merged[0]?.response_body).toBeUndefined();
+  });
+
+  it('blocks non-object and incomplete JSON before rendering fault controls', () => {
+    for (const raw of ['null', '[]', '{', '"string"']) expect(wsConfigError(raw)).not.toBeNull();
   });
 });

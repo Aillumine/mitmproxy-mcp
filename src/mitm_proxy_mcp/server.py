@@ -314,7 +314,8 @@ async def list_tools() -> list[Tool]:
             description=(
                 "添加 HTTP 响应、WebSocket 文本消息或离线 WS/WSS 服务规则。"
                 "ws_message 保留真实连接；"
-                "ws_server 在本机模拟握手、推送和 Socket.IO v4 心跳。"
+                "ws_server 在本机模拟握手、推送和 Socket.IO v4 心跳；"
+                "ws_fault 在真实或模拟连接上注入延迟、暂停或断连。"
             ),
             inputSchema={
                 "type": "object",
@@ -328,7 +329,8 @@ async def list_tools() -> list[Tool]:
                         "description": "URL 匹配模式。根据 match_type 不同：contains 模式支持 * 通配符，exact 精确匹配，regex 正则匹配",
                     },
                     "mock_type": {
-                        "type": "string", "enum": ["http", "ws_message", "ws_server"],
+                        "type": "string",
+                        "enum": ["http", "ws_message", "ws_server", "ws_fault"],
                         "description": (
                             "规则类型，默认 http。WS 规则使用 ws:// 或 wss:// URL，"
                             "不按 HTTP method 过滤。"
@@ -345,7 +347,17 @@ async def list_tools() -> list[Tool]:
                             "messages([{body,delay_ms}]，依次推送), "
                             "ping_interval_ms(默认25000), ping_timeout_ms(默认20000)。"
                             "仅文本消息；Socket.IO 仅 EIO=4 WebSocket 直连。"
-                            "服务配置对新连接生效。"
+                            "服务配置对新连接生效。ws_fault: "
+                            "action(delay/pause/close/abort), "
+                            "direction(client/server/both), "
+                            "trigger(messages/time), "
+                            "after_messages(默认0)/after_ms(默认0), "
+                            "duration_ms(pause必填), jitter_ms, "
+                            "probability(0..1), seed, "
+                            "preserve_heartbeat(默认true), "
+                            "close_code(默认1000), close_reason。"
+                            "delay使用规则delay_ms作为基础延迟；故障规则均对新连接生效。"
+                            "暂停与延迟保留原消息；close发送关闭帧，abort突然切断传输。"
                         ),
                     },
                     "response_body": {
@@ -419,7 +431,8 @@ async def list_tools() -> list[Tool]:
                         "description": "新的 URL 匹配模式",
                     },
                     "mock_type": {
-                        "type": "string", "enum": ["http", "ws_message", "ws_server"],
+                        "type": "string",
+                        "enum": ["http", "ws_message", "ws_server", "ws_fault"],
                         "description": (
                             "规则类型，默认 http。WS 规则使用 ws:// 或 wss:// URL，"
                             "不按 HTTP method 过滤。"
@@ -436,7 +449,17 @@ async def list_tools() -> list[Tool]:
                             "messages([{body,delay_ms}]，依次推送), "
                             "ping_interval_ms(默认25000), ping_timeout_ms(默认20000)。"
                             "仅文本消息；Socket.IO 仅 EIO=4 WebSocket 直连。"
-                            "服务配置对新连接生效。"
+                            "服务配置对新连接生效。ws_fault: "
+                            "action(delay/pause/close/abort), "
+                            "direction(client/server/both), "
+                            "trigger(messages/time), "
+                            "after_messages(默认0)/after_ms(默认0), "
+                            "duration_ms(pause必填), jitter_ms, "
+                            "probability(0..1), seed, "
+                            "preserve_heartbeat(默认true), "
+                            "close_code(默认1000), close_reason。"
+                            "delay使用规则delay_ms作为基础延迟；故障规则均对新连接生效。"
+                            "暂停与延迟保留原消息；close发送关闭帧，abort突然切断传输。"
                         ),
                     },
                     "response_body": {

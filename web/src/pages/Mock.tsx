@@ -4,6 +4,7 @@ import CodeMirror from '@uiw/react-codemirror';
 import { useEffect, useRef, useState } from 'react';
 import { callTool } from '../api';
 import { JsonPane } from '../components/JsonPane';
+import { WsFaultFields } from '../components/WsFaultFields';
 import {
   bodyForEditor,
   bodyIsInvalidJson,
@@ -176,11 +177,18 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
-  function patchWsConfig(key: string, value: string) {
-    setDraft((prev) => prev && {
-      ...prev,
-      ws_config_json: JSON.stringify({ ...JSON.parse(prev.ws_config_json), [key]: value }, null, 2),
-    });
+  function patchWsConfig(key: string, value: string | number | boolean | undefined) {
+    setDraft(
+      (prev) =>
+        prev && {
+          ...prev,
+          ws_config_json: JSON.stringify(
+            { ...JSON.parse(prev.ws_config_json), [key]: value },
+            null,
+            2,
+          ),
+        },
+    );
   }
 
   async function toggleRule(rule: MockRule, enabled: boolean) {
@@ -447,7 +455,9 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                             {rule.mock_type && rule.mock_type !== 'http'
                               ? rule.mock_type === 'ws_server'
                                 ? 'WS 服务'
-                                : 'WS 消息'
+                                : rule.mock_type === 'ws_fault'
+                                  ? 'WS 故障'
+                                  : 'WS 消息'
                               : method}
                           </span>
                         </span>
@@ -458,7 +468,11 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                         </div>
                       </td>
                       <td className={tone ? `status-${tone}` : 'muted'}>
-                        {rule.mock_type === 'ws_server' ? 101 : rule.mock_type === 'ws_message' ? '—' : rule.status_code}
+                        {rule.mock_type === 'ws_server'
+                          ? 101
+                          : rule.mock_type === 'ws_message' || rule.mock_type === 'ws_fault'
+                            ? '—'
+                            : rule.status_code}
                       </td>
                       <td>{rule.hit_count}</td>
                       <td>{rule.delay_ms ? `${rule.delay_ms} ms` : '—'}</td>
@@ -512,6 +526,7 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                   <option value="http">HTTP 响应</option>
                   <option value="ws_message">WebSocket 消息</option>
                   <option value="ws_server">WebSocket 模拟服务</option>
+                  <option value="ws_fault">WebSocket 故障</option>
                 </select>
               </label>
               <label className="field">
@@ -556,9 +571,10 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                   />
                 </label>
                 <label className="field">
-                  <span>Delay ms</span>
+                  <span>{draft.mock_type === 'ws_fault' ? '基础延迟（毫秒）' : 'Delay ms'}</span>
                   <input
                     type="number"
+                    disabled={draft.mock_type === 'ws_fault' && config.action !== 'delay'}
                     value={draft.delay_ms}
                     onChange={(event) => patchDraft('delay_ms', Number(event.target.value) || 0)}
                   />
@@ -575,49 +591,92 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
               {draft.mock_type !== 'http' ? (
                 <div className="field">
                   <span>WebSocket 配置</span>
-                  {draft.mock_type === 'ws_message' ? (
+                  {draft.mock_type === 'ws_fault' ? (
+                    <WsFaultFields
+                      config={config}
+                      disabled={!!configError}
+                      onChange={patchWsConfig}
+                    />
+                  ) : draft.mock_type === 'ws_message' ? (
                     <>
                       <div className="field-row">
-                        <label className="field"><span>消息方向</span>
-                          <select disabled={!!configError} value={config.direction ?? 'server'} onChange={(event) => patchWsConfig('direction', event.target.value)}>
+                        <label className="field">
+                          <span>消息方向</span>
+                          <select
+                            disabled={!!configError}
+                            value={config.direction ?? 'server'}
+                            onChange={(event) => patchWsConfig('direction', event.target.value)}
+                          >
                             <option value="server">服务端 → 客户端</option>
                             <option value="client">客户端 → 服务端</option>
                             <option value="both">双向</option>
                           </select>
                         </label>
-                        <label className="field"><span>动作</span>
-                          <select disabled={!!configError} value={config.action ?? 'replace'} onChange={(event) => patchWsConfig('action', event.target.value)}>
-                            <option value="replace">替换消息</option><option value="drop">丢弃消息</option><option value="reply">向发送方回复</option>
+                        <label className="field">
+                          <span>动作</span>
+                          <select
+                            disabled={!!configError}
+                            value={config.action ?? 'replace'}
+                            onChange={(event) => patchWsConfig('action', event.target.value)}
+                          >
+                            <option value="replace">替换消息</option>
+                            <option value="drop">丢弃消息</option>
+                            <option value="reply">向发送方回复</option>
                           </select>
                         </label>
                       </div>
-                      <label className="field"><span>消息内容匹配（留空匹配全部）</span>
-                        <input disabled={!!configError} value={config.message_pattern ?? ''} onChange={(event) => patchWsConfig('message_pattern', event.target.value)} />
+                      <label className="field">
+                        <span>消息内容匹配（留空匹配全部）</span>
+                        <input
+                          disabled={!!configError}
+                          value={config.message_pattern ?? ''}
+                          onChange={(event) => patchWsConfig('message_pattern', event.target.value)}
+                        />
                       </label>
-                      <label className="field"><span>内容匹配方式</span>
-                        <select disabled={!!configError} value={config.message_match_type ?? 'contains'} onChange={(event) => patchWsConfig('message_match_type', event.target.value)}>
-                          <option value="contains">包含 / 通配符</option><option value="exact">完全相同</option><option value="regex">正则表达式</option>
+                      <label className="field">
+                        <span>内容匹配方式</span>
+                        <select
+                          disabled={!!configError}
+                          value={config.message_match_type ?? 'contains'}
+                          onChange={(event) =>
+                            patchWsConfig('message_match_type', event.target.value)
+                          }
+                        >
+                          <option value="contains">包含 / 通配符</option>
+                          <option value="exact">完全相同</option>
+                          <option value="regex">正则表达式</option>
                         </select>
                       </label>
                     </>
                   ) : (
-                    <label className="field"><span>服务协议</span>
-                      <select disabled={!!configError} value={config.protocol ?? 'raw'} onChange={(event) => patchWsConfig('protocol', event.target.value)}>
-                        <option value="raw">原生 WebSocket</option><option value="socketio">Socket.IO v4（WebSocket 直连）</option>
+                    <label className="field">
+                      <span>服务协议</span>
+                      <select
+                        disabled={!!configError}
+                        value={config.protocol ?? 'raw'}
+                        onChange={(event) => patchWsConfig('protocol', event.target.value)}
+                      >
+                        <option value="raw">原生 WebSocket</option>
+                        <option value="socketio">Socket.IO v4（WebSocket 直连）</option>
                       </select>
                     </label>
                   )}
                   <p className="muted">
-                    {draft.mock_type === 'ws_message'
-                      ? '回复会丢弃原消息，并向发送方发送下方填写的文本。替换、丢弃和回复都只执行第一条命中的规则，最近更新的规则优先。'
-                      : 'protocol：raw 原生 WebSocket / socketio（EIO=4，WebSocket 直连）。messages 为连接后依次推送的文本，delay_ms 是距上一条的延迟。Socket.IO 在 namespace 连接后推送，并自动维护心跳；事件使用 42["事件名",数据]。客户端消息响应请另建同 URL 的 WS 消息规则，direction=client、action=reply。配置对新连接生效。'}
+                    {draft.mock_type === 'ws_fault'
+                      ? '故障规则按连接捕获，多条可叠加。修改或停用后请重新连接。每方向保留消息顺序；保留心跳时，Socket.IO 心跳可越过业务消息队列。'
+                      : draft.mock_type === 'ws_message'
+                        ? '回复会丢弃原消息，并向发送方发送下方填写的文本。替换、丢弃和回复都只执行第一条命中的规则，最近更新的规则优先。'
+                        : 'protocol：raw 原生 WebSocket / socketio（EIO=4，WebSocket 直连）。messages 为连接后依次推送的文本，delay_ms 是距上一条的延迟。Socket.IO 在 namespace 连接后推送，并自动维护心跳；事件使用 42["事件名",数据]。客户端消息响应请另建同 URL 的 WS 消息规则，direction=client、action=reply。配置对新连接生效。'}
                   </p>
-                  <CodeMirror
-                    value={draft.ws_config_json}
-                    theme={oneDark}
-                    extensions={[json()]}
-                    onChange={(value) => patchDraft('ws_config_json', value)}
-                  />
+                  <details open={draft.mock_type !== 'ws_fault'}>
+                    <summary>JSON 配置（高级）</summary>
+                    <CodeMirror
+                      value={draft.ws_config_json}
+                      theme={oneDark}
+                      extensions={[json()]}
+                      onChange={(value) => patchDraft('ws_config_json', value)}
+                    />
+                  </details>
                   {wsConfigError(draft.ws_config_json) ? (
                     <p className="page-banner warn-banner">{wsConfigError(draft.ws_config_json)}</p>
                   ) : null}
@@ -627,36 +686,40 @@ export default function Mock({ focusMockId, onFocusConsumed }: MockProps) {
                   </p>
                 </div>
               ) : null}
-              <div className="field">
-                <span>
-                  {draft.mock_type === 'ws_server'
-                    ? '响应体（模拟服务不使用此字段）'
-                    : draft.mock_type === 'ws_message'
-                      ? '替换 / 回复文本'
-                      : 'Response body'}
-                </span>
-                <div className="json-pane-toolbar">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      patchDraft('response_body', formatBody(draft.response_body).text)
-                    }
-                  >
-                    Format
-                  </button>
-                </div>
-                <CodeMirror
-                  value={draft.response_body}
-                  theme={oneDark}
-                  extensions={[json()]}
-                  onChange={(value) => patchDraft('response_body', value)}
-                  basicSetup={{
-                    highlightActiveLine: false,
-                    highlightActiveLineGutter: false,
-                  }}
-                />
-              </div>
-              <JsonPane raw={draft.response_body} />
+              {draft.mock_type !== 'ws_fault' ? (
+                <>
+                  <div className="field">
+                    <span>
+                      {draft.mock_type === 'ws_server'
+                        ? '响应体（模拟服务不使用此字段）'
+                        : draft.mock_type === 'ws_message'
+                          ? '替换 / 回复文本'
+                          : 'Response body'}
+                    </span>
+                    <div className="json-pane-toolbar">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          patchDraft('response_body', formatBody(draft.response_body).text)
+                        }
+                      >
+                        Format
+                      </button>
+                    </div>
+                    <CodeMirror
+                      value={draft.response_body}
+                      theme={oneDark}
+                      extensions={[json()]}
+                      onChange={(value) => patchDraft('response_body', value)}
+                      basicSetup={{
+                        highlightActiveLine: false,
+                        highlightActiveLineGutter: false,
+                      }}
+                    />
+                  </div>
+                  <JsonPane raw={draft.response_body} />
+                </>
+              ) : null}
               <div className="form-actions">
                 <button
                   type="submit"

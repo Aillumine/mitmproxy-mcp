@@ -191,7 +191,12 @@ async def test_mcp_schema_exposes_ws_fields():
     tools = {tool.name: tool for tool in await list_tools()}
     for name in ("mock_add", "mock_update"):
         properties = tools[name].inputSchema["properties"]
-        assert properties["mock_type"]["enum"] == ["http", "ws_message", "ws_server"]
+        assert properties["mock_type"]["enum"] == [
+            "http",
+            "ws_message",
+            "ws_server",
+            "ws_fault",
+        ]
         assert properties["ws_config"]["type"] == "object"
 
 

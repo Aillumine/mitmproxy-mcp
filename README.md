@@ -141,6 +141,54 @@ WS 规则的 URL 使用 `ws://` / `wss://`；握手里的 `http://` / `https://`
 
 更新代码后需重启控制服务和代理，浏览器重新加载新资源。代理现在使用 lazy 连接策略，离线 WSS 不会为了握手提前连接真实目标；手动运行 addon 时也需设置 `--set connection_strategy=lazy`。
 
+### 中途卡顿与断连
+
+Mock 页选择 **WebSocket 故障**（`mock_type=ws_fault`），即可对真实 WS/WSS 或离线模拟连接注入故障；也作用于 Mac 本机连接。它按 URL 精确限定场景，不依赖 Proxy 页仅面向非本机客户端的整体弱网档位。
+
+- `delay`：消息原样延迟，基础时长为规则的 `delay_ms`；`jitter_ms` 表示正负随机抖动，实际时长最低为 0。可用 `probability` 模拟部分消息随机卡顿。
+- `pause`：暂停业务消息 `duration_ms` 后恢复，按每个方向原有顺序发送，正文与二进制类型不变。
+- `close`：向两端发送合法 WebSocket 关闭帧，可配置 `close_code` 和 `close_reason`。
+- `abort`：不发送 WebSocket 关闭帧，突然切断传输，用于验证异常断连和重连。它不保证底层 TCP RST，也不等同于系统断网。
+
+两种触发方式：`trigger=messages` 时，按 `direction` 统计消息，`after_messages=N` 表示先通过 N 条；延迟/暂停从第 N+1 条开始，关闭/中断在第 N 条实际发出后发生。N=0 的关闭/中断在建连后立即执行。`trigger=time` 时，`after_ms` 从 WebSocket 建立后计时，即使连接空闲也能触发；暂停时间窗结束后到达的消息不会再受这次暂停影响。
+
+例如“先正常接收 5 条消息，随后暂停 10 秒再恢复”：
+
+```json
+{
+  "name": "回复中途卡住十秒",
+  "url_pattern": "wss://example.com/socket.io/",
+  "response_body": "",
+  "mock_type": "ws_fault",
+  "ws_config": {
+    "direction": "server",
+    "trigger": "messages",
+    "after_messages": 5,
+    "action": "pause",
+    "duration_ms": 10000,
+    "preserve_heartbeat": true
+  }
+}
+```
+
+再添加同 URL 的故障规则即可叠加“连接建立 30 秒后突然断开”：
+
+```json
+{
+  "name": "三十秒后突然断连",
+  "url_pattern": "wss://example.com/socket.io/",
+  "response_body": "",
+  "mock_type": "ws_fault",
+  "ws_config": {"trigger": "time", "after_ms": 30000, "action": "abort"}
+}
+```
+
+`preserve_heartbeat` 默认 true：Socket.IO 的 open/connect 和心跳消息不计入业务条数，并可越过积压的业务消息；设为 false 可压出心跳超时。原生 WebSocket ping/pong 控制帧始终由协议层透传，测试这类连接丢失请使用 `abort`。`direction` 支持 client/server/both（默认 server），both 的消息合计计数；关闭与中断总是结束整条连接。
+
+`probability` 取 0–1，默认 1；暂停、关闭、中断每条连接抽取一次概率且最多执行一次，延迟则逐条消息抽取。可选 `seed` 为 0–4294967295 的整数，固定它可复现随机序列。多条故障规则可叠加：延迟取较晚的放行时刻，暂停时间窗取并集；计时断连会丢弃仍在积压的消息。
+
+故障配置在握手完成时捕获，编辑或停用后需**重新连接**；重新连接会重置条数、计时器和随机状态。断连会清理排队任务。每条连接最多暂存 1000 条或 8 MiB 消息，超出时用 1009 关闭，避免长时间卡顿耗尽内存。延迟重放的流量详情通过 `X-Mock-Rule` 标识故障规则，Mock 列表的 Hits 显示实际触发次数。
+
 ### 真机抓包：禁止 Mac 系统代理
 
 真机（Android / iOS）抓包时，**不会也不应**设置 Mac Wi-Fi 系统代理，避免污染本机网络。推荐路径：mitm 只监听 + `android_reverse_proxy` / 设备 Wi-Fi 指向 Mac IP。

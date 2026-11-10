@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import Any
@@ -31,6 +30,11 @@ from mitm_proxy_mcp.control.dispatch import (
 from mitm_proxy_mcp.control.dispatch import (
     invoke_tool as default_invoke_tool,
 )
+from mitm_proxy_mcp.control.proxy_addresses import (
+    AddressPreference,
+    address_state,
+    save_preference,
+)
 from mitm_proxy_mcp.control.runtime import (
     RuntimeInfo,
 )
@@ -54,26 +58,15 @@ ListenIpGetter = Callable[[], str]
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "testclient"}
 COOKIE_NAME = "mitm_ui"
 
-_LISTEN_IP: str | None = None
-
 
 def default_listen_ip() -> str:
-    """本机局域网 IP，供设备填写代理；失败则 127.0.0.1。"""
-    global _LISTEN_IP
-    if _LISTEN_IP:
-        return _LISTEN_IP
-    ip = "127.0.0.1"
+    # Recompute device reachability instead of caching the default route's IP.
+    #
+    # 不再永久缓存默认出口 IP，每次跟随网卡偏好和当前 DHCP 地址。
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        found = sock.getsockname()[0]
-        sock.close()
-        if found and found != "0.0.0.0":
-            ip = found
-    except OSError:
-        pass
-    _LISTEN_IP = ip
-    return ip
+        return address_state()["host"] or "127.0.0.1"
+    except (OSError, ValueError):
+        return "127.0.0.1"
 
 
 def _client_host(request: Request) -> str:
@@ -154,6 +147,26 @@ def create_app(
             return {"filter": value.model_dump()}
         except OSError as error:
             raise HTTPException(500, "过滤规则保存失败，请重试") from error
+
+    @app.get("/v1/ui/proxy-address", dependencies=[Depends(require_token)])
+    def proxy_address() -> dict[str, Any]:
+        try:
+            return address_state()
+        except (OSError, ValueError) as error:
+            raise HTTPException(500, "无法读取网卡偏好，原文件已保留") from error
+
+    @app.put("/v1/ui/proxy-address", dependencies=[Depends(require_token)])
+    def select_proxy_address(value: AddressPreference) -> dict[str, Any]:
+        current = proxy_address()
+        if value.interface is not None and not any(
+            item["interface"] == value.interface for item in current["addresses"]
+        ):
+            raise HTTPException(400, "网卡已断开，请刷新后重新选择")
+        try:
+            save_preference(value)
+        except OSError as error:
+            raise HTTPException(500, "连接地址偏好保存失败，请重试") from error
+        return proxy_address()
 
     @app.get("/v1/health", dependencies=[Depends(require_token)])
     def health() -> dict[str, Any]:

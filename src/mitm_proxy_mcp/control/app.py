@@ -8,7 +8,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import (
+    Body,
+    Cookie,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +36,11 @@ from mitm_proxy_mcp.control.runtime import (
 )
 from mitm_proxy_mcp.control.runtime import (
     read_runtime as default_read_runtime,
+)
+from mitm_proxy_mcp.control.traffic_filter import (
+    TrafficFilter,
+    read_filter,
+    write_filter,
 )
 from mitm_proxy_mcp.tools.proxy_tools import proxy_status
 
@@ -125,6 +139,22 @@ def create_app(
         )
         return {"ok": True}
 
+    @app.get("/v1/ui/traffic-filter", dependencies=[Depends(require_token)])
+    def traffic_filter() -> dict[str, Any]:
+        try:
+            value = read_filter()
+            return {"filter": value.model_dump() if value is not None else None}
+        except (OSError, ValueError) as error:
+            raise HTTPException(500, "无法读取过滤规则，原文件已保留") from error
+
+    @app.put("/v1/ui/traffic-filter", dependencies=[Depends(require_token)])
+    def save_traffic_filter(value: TrafficFilter) -> dict[str, Any]:
+        try:
+            write_filter(value)
+            return {"filter": value.model_dump()}
+        except OSError as error:
+            raise HTTPException(500, "过滤规则保存失败，请重试") from error
+
     @app.get("/v1/health", dependencies=[Depends(require_token)])
     def health() -> dict[str, Any]:
         return {
@@ -180,6 +210,7 @@ def create_app(
 
     ui = webui_dir.webui_path()
     if ui is None:
+
         @app.get("/")
         def no_ui() -> PlainTextResponse:
             return PlainTextResponse(
@@ -187,6 +218,7 @@ def create_app(
                 status_code=503,
             )
     else:
+
         @app.get("/")
         def index() -> FileResponse:
             return FileResponse(ui / "index.html")

@@ -1,15 +1,15 @@
 """MCP 工具测试"""
 
-import time
 import tempfile
+import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mitm_proxy_mcp.tools import traffic_tools, android_tools, proxy_tools
 from mitm_proxy_mcp.core.models import TrafficRecord
 from mitm_proxy_mcp.core.sqlite_store import SQLiteTrafficStore
+from mitm_proxy_mcp.tools import android_tools, proxy_tools, traffic_tools
 
 
 class TestProxyTools:
@@ -59,20 +59,21 @@ class TestTrafficTools:
     def teardown_method(self):
         """每个测试后清理"""
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_traffic_list_proxy_not_started(self):
         """测试代理未启动时列出流量"""
         # 使用不存在的数据库路径
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=False):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=False):
             result = traffic_tools.traffic_list()
             assert result["success"] is False
             assert "代理未启动" in result["message"]
 
     def test_traffic_list_empty(self):
         """测试空流量列表"""
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 result = traffic_tools.traffic_list()
 
                 assert result["success"] is True
@@ -96,8 +97,8 @@ class TestTrafficTools:
 
         self.store.add(record)
 
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 result = traffic_tools.traffic_list(limit=10)
 
                 assert result["success"] is True
@@ -136,8 +137,8 @@ class TestTrafficTools:
         )
         self.store.add(other_record)
 
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 # 按域名筛选
                 result = traffic_tools.traffic_list(filter_domain="%.example.com")
                 assert result["success"] is True
@@ -149,8 +150,8 @@ class TestTrafficTools:
 
     def test_traffic_get_detail_not_found(self):
         """测试获取不存在的请求详情"""
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 result = traffic_tools.traffic_get_detail("nonexistent")
 
                 assert result["success"] is False
@@ -176,8 +177,8 @@ class TestTrafficTools:
 
         self.store.add(record)
 
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 result = traffic_tools.traffic_get_detail("req-1")
 
                 assert result["success"] is True
@@ -204,8 +205,8 @@ class TestTrafficTools:
 
         assert len(self.store) == 10
 
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 result = traffic_tools.traffic_clear()
 
                 assert result["success"] is True
@@ -214,18 +215,24 @@ class TestTrafficTools:
 
     def test_proxy_status_not_running(self):
         """测试代理未运行时的状态"""
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=False):
+        with (
+            patch.object(SQLiteTrafficStore, "exists", return_value=False),
+            patch.object(proxy_tools, "_find_proxy_process_by_port", return_value=None),
+        ):
             result = proxy_tools.proxy_status()
             assert result["running"] is False
 
     def test_proxy_status_running(self):
         """测试代理运行时的状态"""
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(proxy_tools, 'SQLiteTrafficStore') as MockStore:
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(proxy_tools, "SQLiteTrafficStore") as MockStore:
                 MockStore.exists.return_value = True
                 MockStore.return_value = self.store
                 MockStore.get_default_path.return_value = self.store.db_path
-                result = proxy_tools.proxy_status()
+                with patch.object(
+                    proxy_tools, "_find_proxy_process_by_port", return_value=123
+                ):
+                    result = proxy_tools.proxy_status()
                 assert result["running"] is True
 
     def test_traffic_search_in_response_body(self):
@@ -240,13 +247,15 @@ class TestTrafficTools:
             resource_type="XHR",
             size=1024,
             time_ms=150.0,
-            response_body='{"users": [{"name": "张三", "age": 25}]}'.encode('utf-8'),
+            response_body='{"users": [{"name": "张三", "age": 25}]}'.encode(),
         )
         self.store.add(record)
 
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
-                result = traffic_tools.traffic_search(keyword="张三", search_in=["response_body"])
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
+                result = traffic_tools.traffic_search(
+                    keyword="张三", search_in=["response_body"]
+                )
 
                 assert result["success"] is True
                 assert result["total_matches"] == 1
@@ -268,16 +277,18 @@ class TestTrafficTools:
         )
         self.store.add(record)
 
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
-                result = traffic_tools.traffic_search(keyword="search", search_in=["url"])
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
+                result = traffic_tools.traffic_search(
+                    keyword="search", search_in=["url"]
+                )
 
                 assert result["success"] is True
                 assert result["total_matches"] == 1
 
     def test_traffic_read_body(self):
         """测试分片读取响应体"""
-        large_body = b'{"data": "' + b'x' * 10000 + b'"}'
+        large_body = b'{"data": "' + b"x" * 10000 + b'"}'
         record = TrafficRecord(
             id="req-1",
             timestamp=time.time(),
@@ -292,10 +303,12 @@ class TestTrafficTools:
         )
         self.store.add(record)
 
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 # 读取前 1000 字符
-                result = traffic_tools.traffic_read_body("req-1", "response_body", offset=0, length=1000)
+                result = traffic_tools.traffic_read_body(
+                    "req-1", "response_body", offset=0, length=1000
+                )
 
                 assert result["success"] is True
                 assert len(result["content"]) == 1000
@@ -303,14 +316,16 @@ class TestTrafficTools:
                 assert result["total_size"] > 1000
 
                 # 继续读取
-                result2 = traffic_tools.traffic_read_body("req-1", "response_body", offset=1000, length=1000)
+                result2 = traffic_tools.traffic_read_body(
+                    "req-1", "response_body", offset=1000, length=1000
+                )
                 assert result2["success"] is True
                 assert result2["offset"] == 1000
 
     def test_traffic_read_body_not_found(self):
         """测试读取不存在的请求"""
-        with patch.object(SQLiteTrafficStore, 'exists', return_value=True):
-            with patch.object(traffic_tools, '_get_store', return_value=self.store):
+        with patch.object(SQLiteTrafficStore, "exists", return_value=True):
+            with patch.object(traffic_tools, "_get_store", return_value=self.store):
                 result = traffic_tools.traffic_read_body("nonexistent", "response_body")
 
                 assert result["success"] is False

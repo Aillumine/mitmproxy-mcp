@@ -6,8 +6,6 @@ import subprocess
 import sys
 import time
 
-import pytest
-
 from mitm_proxy_mcp.control.runtime import is_pid_alive, is_zombie, reap
 from mitm_proxy_mcp.tools import proxy_tools
 
@@ -112,9 +110,9 @@ class TestSignalProcessTree:
             proxy_tools._signal_process_tree(parent.pid, 15)
 
             assert _wait_until(lambda: not is_pid_alive(parent.pid)), "父进程未退出"
-            assert _wait_until(
-                lambda: not is_pid_alive(child_pid)
-            ), "子进程成了孤儿——只杀父进程不够"
+            assert _wait_until(lambda: not is_pid_alive(child_pid)), (
+                "子进程成了孤儿——只杀父进程不够"
+            )
         finally:
             parent.kill()
             parent.wait()
@@ -143,6 +141,9 @@ class TestProxyStop:
         )
         pid_file.write_text(str(child.pid))
 
+        monkeypatch.setattr(
+            proxy_tools, "_find_proxy_process_by_port", lambda port: child.pid
+        )
         result = proxy_tools.proxy_stop()
 
         assert result["success"] is True
@@ -153,7 +154,9 @@ class TestProxyStop:
 
     def test_stop_reports_when_nothing_is_running(self, tmp_path, monkeypatch):
         monkeypatch.setattr(proxy_tools, "PID_FILE", tmp_path / "absent.pid")
-        monkeypatch.setattr(proxy_tools, "_find_proxy_process_by_port", lambda port: None)
+        monkeypatch.setattr(
+            proxy_tools, "_find_proxy_process_by_port", lambda port: None
+        )
 
         result = proxy_tools.proxy_stop()
         assert result["success"] is False

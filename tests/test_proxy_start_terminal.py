@@ -28,7 +28,7 @@ def test_build_terminal_do_script_quotes_for_applescript():
     assert script == (
         'tell application "Terminal"\n'
         "activate\n"
-        'do script "cd \'/tmp/proj \\"x\\"\' && \'/usr/bin/uv\' \'run\' \'mitmproxy-start\'"\n'
+        "do script \"cd '/tmp/proj \\\"x\\\"' && '/usr/bin/uv' 'run' 'mitmproxy-start'\"\n"
         "end tell\n"
     )
 
@@ -47,7 +47,9 @@ def test_launch_proxy_uses_background_popen(monkeypatch):
     monkeypatch.setattr(proxy_tools.sys, "platform", "darwin")
     monkeypatch.setattr(proxy_tools.subprocess, "Popen", fake_popen)
 
-    launch = proxy_tools._launch_proxy(["uv", "run", "mitmproxy-start"], Path("/tmp/proj"))
+    launch = proxy_tools._launch_proxy(
+        ["uv", "run", "mitmproxy-start"], Path("/tmp/proj")
+    )
 
     assert captured["cmd"] == ["uv", "run", "mitmproxy-start"]
     assert captured["kwargs"]["cwd"] == Path("/tmp/proj")
@@ -115,12 +117,20 @@ def test_proxy_start_uses_background_process_and_saves_pid(monkeypatch):
         return ProxyLaunch(AliveProc(), None, None, False)
 
     monkeypatch.setattr(proxy_tools, "_read_pid", lambda: None)
-    monkeypatch.setattr(proxy_tools, "_find_proxy_process_by_port", lambda port: None)
-    monkeypatch.setattr(proxy_tools, "_save_pid", lambda pid: opened.__setitem__("pid", pid))
+    monkeypatch.setattr(
+        proxy_tools,
+        "_find_proxy_process_by_port",
+        lambda port: 4242 if "cmd" in opened else None,
+    )
+    monkeypatch.setattr(
+        proxy_tools, "_save_pid", lambda pid: opened.__setitem__("pid", pid)
+    )
     monkeypatch.setattr(proxy_tools, "_launch_proxy", fake_launch)
     monkeypatch.setattr(proxy_tools.socket, "socket", lambda *args: sockets)
     monkeypatch.setattr(proxy_tools.time, "sleep", lambda _: None)
-    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+    monkeypatch.setattr(
+        "shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None
+    )
 
     result = proxy_tools.proxy_start(port=8888, setup_proxy=False)
 
@@ -167,7 +177,9 @@ def test_proxy_start_opens_ui_after_listen(monkeypatch):
 
     def fake_launch(cmd, project_root=None):
         opened["ok"] = True
-        return ProxyLaunch(type("P", (), {"pid": 7, "poll": lambda self: None})(), None, None, False)
+        return ProxyLaunch(
+            type("P", (), {"pid": 7, "poll": lambda self: None})(), None, None, False
+        )
 
     monkeypatch.setattr(proxy_tools.sys, "platform", "darwin")
     monkeypatch.setattr(proxy_tools, "_read_pid", lambda: None)
@@ -176,7 +188,9 @@ def test_proxy_start_opens_ui_after_listen(monkeypatch):
     monkeypatch.setattr(proxy_tools, "_launch_proxy", fake_launch)
     monkeypatch.setattr(proxy_tools.socket, "socket", lambda *args: sockets)
     monkeypatch.setattr(proxy_tools.time, "sleep", lambda _: None)
-    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+    monkeypatch.setattr(
+        "shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None
+    )
     monkeypatch.setattr(proxy_tools, "control_ui_url", lambda: "http://127.0.0.1:18765")
     monkeypatch.setattr(proxy_tools.webbrowser, "open", lambda url: urls.append(url))
 
@@ -213,7 +227,9 @@ def test_proxy_start_skips_browser_by_default(monkeypatch):
 
     def fake_launch(cmd, project_root=None):
         launched["v"] = True
-        return ProxyLaunch(type("P", (), {"pid": 7, "poll": lambda self: None})(), None, None, False)
+        return ProxyLaunch(
+            type("P", (), {"pid": 7, "poll": lambda self: None})(), None, None, False
+        )
 
     monkeypatch.setattr(proxy_tools.sys, "platform", "darwin")
     monkeypatch.setattr(proxy_tools, "_read_pid", lambda: None)
@@ -222,7 +238,9 @@ def test_proxy_start_skips_browser_by_default(monkeypatch):
     monkeypatch.setattr(proxy_tools, "_launch_proxy", fake_launch)
     monkeypatch.setattr(proxy_tools.socket, "socket", lambda *args: sockets)
     monkeypatch.setattr(proxy_tools.time, "sleep", lambda _: None)
-    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+    monkeypatch.setattr(
+        "shutil.which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None
+    )
     monkeypatch.setattr(proxy_tools.webbrowser, "open", lambda url: urls.append(url))
 
     result = proxy_tools.proxy_start(port=8888, setup_proxy=False)

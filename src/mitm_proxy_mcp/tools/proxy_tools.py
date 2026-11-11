@@ -5,9 +5,10 @@
 """
 
 import os
+import shlex
 import socket
 import subprocess
-import sys
+import sys  # noqa: F401
 import time
 import webbrowser
 from pathlib import Path
@@ -85,10 +86,9 @@ def _launch_in_mac_terminal(cmd: list[str], cwd: Path | None) -> None:
         timeout=10,
     )
     if opened.returncode != 0:
-        detail = (
-            (result.stderr or result.stdout or "").strip()
-            or (opened.stderr or opened.stdout or "open Terminal failed").strip()
-        )
+        detail = (result.stderr or result.stdout or "").strip() or (
+            opened.stderr or opened.stdout or "open Terminal failed"
+        ).strip()
         raise RuntimeError(detail)
 
 
@@ -278,25 +278,78 @@ def _signal_process_tree(pid: int, sig: int) -> None:
         pass
 
 
-def _find_proxy_process_by_port(port: int = 8888) -> int | None:
-    """通过端口查找代理进程 PID"""
+def _is_proxy_process(pid: int) -> bool:
+    # Validate executable tokens, not substrings: a reused PID may belong to control.
+    #
+    # 检查可执行文件参数而非子串，避免复用 PID 或控制服务被当成代理。
     try:
         result = subprocess.run(
-            ["lsof", "-t", "-i", f":{port}"],
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        tokens = shlex.split(result.stdout)
+        return (
+            result.returncode == 0
+            and any(
+                Path(token).name
+                in {"mitmdump", "mitmproxy", "mitmweb", "mitmproxy-start"}
+                for token in tokens[:2]
+            )
+            and is_pid_alive(pid)
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def _save_proxy_port(port: int) -> None:
+    # Remember custom starts separately from PID identity; status must query their port.
+    #
+    # 单独记录自定义启动端口；状态查询不能固定检查 8888，PID 仍须验证身份。
+    PID_FILE.with_suffix(".port").write_text(str(port))
+
+
+def _configured_proxy_port() -> int:
+    try:
+        saved = int(PID_FILE.with_suffix(".port").read_text())
+        if 1 <= saved <= 65535 and _find_proxy_process_by_port(saved) is not None:
+            return saved
+    except (OSError, ValueError):
+        pass
+    try:
+        runtime = read_runtime()
+        if runtime is not None:
+            return int(runtime.proxy_port)
+    except (OSError, ValueError, TypeError):
+        pass
+    return 8888
+
+
+def _find_proxy_process_by_port(port: int = 8888) -> int | None:
+    # Previously any port user counted; require a live proxy owning a TCP listener.
+    #
+    # 原先任意端口占用者都会被接受；现在要求存活的代理进程持有 TCP 监听。
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
             timeout=5,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            pids = [int(p.strip()) for p in result.stdout.strip().split("\n") if p.strip()]
-            # 返回第一个找到的 PID
-            return pids[0] if pids else None
-    except Exception:
+        for value in result.stdout.split():
+            pid = int(value)
+            if _is_proxy_process(pid):
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    return pid
+    except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return None
 
 
-def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = False) -> dict[str, Any]:
+def proxy_start(
+    port: int = 8888, setup_proxy: bool = False, open_ui: bool = False
+) -> dict[str, Any]:
     """
     后台启动代理服务，不另开终端窗口。
 
@@ -323,13 +376,18 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = Fal
         return result
 
     # 检查是否已经在运行
-    existing_pid = _read_pid() or _find_proxy_process_by_port(port)
+    existing_pid = _find_proxy_process_by_port(port)
     if existing_pid:
-        return with_setup_proxy_guard({
-            "success": False,
-            "message": f"代理已在运行（PID: {existing_pid}）。请先使用 proxy_stop 停止代理。",
-            "pid": existing_pid,
-        })
+        return with_setup_proxy_guard(
+            {
+                "success": False,
+                "message": (
+                    f"代理已在运行（PID: {existing_pid}）。"
+                    "请先使用 proxy_stop 停止代理。"
+                ),
+                "pid": existing_pid,
+            }
+        )
 
     # 检查端口是否被占用
     try:
@@ -341,15 +399,22 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = Fal
             # 端口被占用，尝试通过端口查找进程
             pid = _find_proxy_process_by_port(port)
             if pid:
-                return with_setup_proxy_guard({
+                return with_setup_proxy_guard(
+                    {
+                        "success": False,
+                        "message": (
+                            f"端口 {port} 已被占用（PID: {pid}）。"
+                            "请先使用 proxy_stop 停止代理。"
+                        ),
+                        "pid": pid,
+                    }
+                )
+            return with_setup_proxy_guard(
+                {
                     "success": False,
-                    "message": f"端口 {port} 已被占用（PID: {pid}）。请先使用 proxy_stop 停止代理。",
-                    "pid": pid,
-                })
-            return with_setup_proxy_guard({
-                "success": False,
-                "message": f"端口 {port} 已被占用，但无法确定进程。请手动检查。",
-            })
+                    "message": f"端口 {port} 已被占用，但无法确定进程。请手动检查。",
+                }
+            )
     except Exception:
         pass
 
@@ -358,10 +423,12 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = Fal
 
     uv_cmd = shutil.which("uv")
     if not uv_cmd:
-        return with_setup_proxy_guard({
-            "success": False,
-            "message": "未找到 uv 命令。请确保已安装 uv: https://github.com/astral-sh/uv",
-        })
+        return with_setup_proxy_guard(
+            {
+                "success": False,
+                "message": "未找到 uv 命令。请确保已安装 uv: https://github.com/astral-sh/uv",
+            }
+        )
 
     # 获取项目根目录（可选）
     project_root = _get_project_root()
@@ -373,6 +440,7 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = Fal
         cmd.append("--setup-proxy")
 
     try:
+        _save_proxy_port(port)
         launch = _launch_proxy(cmd, project_root)
         process = launch.process
         stderr_fd = launch.stderr_fd
@@ -398,11 +466,13 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = Fal
                 except Exception:
                     pass
 
-                return with_setup_proxy_guard({
-                    "success": False,
-                    "message": f"代理启动失败（退出码: {process.returncode}）。"
-                    + (f"\n错误信息: {error_msg[:500]}" if error_msg else ""),
-                })
+                return with_setup_proxy_guard(
+                    {
+                        "success": False,
+                        "message": f"代理启动失败（退出码: {process.returncode}）。"
+                        + (f"\n错误信息: {error_msg[:500]}" if error_msg else ""),
+                    }
+                )
 
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -441,7 +511,27 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = Fal
         except Exception:
             pass
 
-        pid = process.pid if process is not None else _find_proxy_process_by_port(port)
+        # Startup uses the same identity and listener check as status and stop.
+        #
+        # 启动成功与状态、停止复用同一进程身份和监听检查，避免端口被抢占后误报。
+        pid = _find_proxy_process_by_port(port)
+        if pid is None:
+            # Reap this launch on verification failure to avoid orphan listeners.
+            #
+            # 验证失败时仅清理本次启动的进程，避免留下无法管理的监听代理。
+            if process is not None:
+                _signal_process_tree(process.pid, 15)
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    _signal_process_tree(process.pid, 9)
+                    process.wait(timeout=3)
+            return with_setup_proxy_guard(
+                {
+                    "success": False,
+                    "message": f"端口 {port} 未发现可接入的代理进程。",
+                }
+            )
         if pid:
             _save_pid(pid)
 
@@ -453,26 +543,33 @@ def proxy_start(port: int = 8888, setup_proxy: bool = False, open_ui: bool = Fal
             except Exception:
                 ui_url = control_ui_url()
             started_msg += f"\n控制台: {ui_url}/"
-        return with_setup_proxy_guard({
-            "success": True,
-            "message": started_msg
-            + (
-                "\n⚠️  注意：Mac 浏览器访问 HTTPS 网站需要安装 CA 证书。"
-                + "在浏览器中访问 http://mitm.it 下载并安装证书。"
-                if setup_proxy
-                else ""
-            ),
-            "pid": pid,
-            "port": port,
-            "in_terminal": launch.in_terminal,
-            "ui_url": ui_url,
-            "certificate_hint": "Mac 浏览器访问 HTTPS 网站需要安装 CA 证书。访问 http://mitm.it 下载。",
-        })
+        return with_setup_proxy_guard(
+            {
+                "success": True,
+                "message": started_msg
+                + (
+                    "\n⚠️  注意：Mac 浏览器访问 HTTPS 网站需要安装 CA 证书。"
+                    + "在浏览器中访问 http://mitm.it 下载并安装证书。"
+                    if setup_proxy
+                    else ""
+                ),
+                "pid": pid,
+                "port": port,
+                "in_terminal": launch.in_terminal,
+                "ui_url": ui_url,
+                "certificate_hint": (
+                    "Mac 浏览器访问 HTTPS 网站需要安装 CA 证书。"
+                    "访问 http://mitm.it 下载。"
+                ),
+            }
+        )
     except Exception as e:
-        return with_setup_proxy_guard({
-            "success": False,
-            "message": f"启动代理时出错: {e}",
-        })
+        return with_setup_proxy_guard(
+            {
+                "success": False,
+                "message": f"启动代理时出错: {e}",
+            }
+        )
 
 
 def proxy_status() -> dict[str, Any]:
@@ -482,19 +579,22 @@ def proxy_status() -> dict[str, Any]:
     Returns:
         代理状态信息
     """
-    if not SQLiteTrafficStore.exists():
-        return {
-            "running": False,
-            "message": "代理未启动。请先运行: uv run mitmproxy-start",
-        }
-
-    store = SQLiteTrafficStore()
-    return {
-        "running": True,
-        "message": "代理正在运行（通过 mitmproxy-start 启动）",
-        "traffic_count": len(store),
+    # History survives shutdown; only an identified listening proxy is running.
+    #
+    # 历史数据库在停止后仍保留；运行状态改由已确认身份的监听代理决定。
+    port = _configured_proxy_port()
+    pid = _find_proxy_process_by_port(port)
+    database_exists = SQLiteTrafficStore.exists()
+    result = {
+        "running": pid is not None,
+        "message": "代理可接入" if pid is not None else "代理未监听或进程身份未确认",
+        "port": port,
+        "pid": pid,
+        "database_exists": database_exists,
+        "traffic_count": len(SQLiteTrafficStore()) if database_exists else 0,
         "db_path": str(SQLiteTrafficStore.get_default_path()),
     }
+    return result
 
 
 def proxy_stop(port: int = 8888) -> dict[str, Any]:
@@ -507,12 +607,10 @@ def proxy_stop(port: int = 8888) -> dict[str, Any]:
     Returns:
         包含停止状态的字典
     """
-    # 先尝试从 PID 文件读取
-    pid = _read_pid()
-
-    # 如果 PID 文件不存在或进程不存在，尝试通过端口查找
-    if not pid:
-        pid = _find_proxy_process_by_port(port)
+    # Never signal a PID file alone: stale or reused PIDs can identify other apps.
+    #
+    # 不再单独信任 PID 文件发送信号，陈旧或复用 PID 可能指向其他应用。
+    pid = _find_proxy_process_by_port(port)
 
     if not pid:
         return {

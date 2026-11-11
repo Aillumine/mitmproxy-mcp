@@ -20,6 +20,7 @@ import {
   countTrafficByKind,
   filterTrafficByKind,
   groupTrafficByPrefix,
+  formatRequestStart,
   isSelectedInRows,
   looksLikeHtml,
   looksLikeImage,
@@ -1138,6 +1139,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                   <th>URL</th>
                   <th>Size</th>
                   <th>Time</th>
+                  <th title="请求开始时间（本地时区）">触发时间</th>
                   <th>cURL</th>
                 </tr>
               </thead>
@@ -1147,7 +1149,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                   return (
                     <Fragment key={group.prefix}>
                       <tr className="traffic-group">
-                        <td colSpan={6}>
+                        <td colSpan={7}>
                           <div className="traffic-group-row">
                             <button
                               type="button"
@@ -1240,6 +1242,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                                 </td>
                                 <td>{formatBytes(row.size)}</td>
                                 <td>{row.time ? `${Math.round(row.time)} ms` : '—'}</td>
+                                <td className="mono">{formatRequestStart(row.request_started_at)}</td>
                                 <td
                                   className="copy-cell"
                                   onClick={(event) => event.stopPropagation()}

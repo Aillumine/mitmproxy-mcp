@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TrafficRow } from '../poll/drainTraffic';
 import {
   apiPath,
+  formatRequestStart,
   buildCurlCommand,
   clampInspectorWidth,
   countTrafficByKind,
@@ -337,5 +338,17 @@ describe('clampInspectorWidth', () => {
 
   it('keeps a width inside the range', () => {
     expect(clampInspectorWidth(700, 1600)).toBe(700);
+  });
+});
+
+describe('formatRequestStart', () => {
+  it('formats local request start down to seconds', () => {
+    const date = new Date(2026, 9, 27, 9, 5, 7, 987);
+    expect(formatRequestStart(date.getTime() / 1000)).toBe('09:05:07');
+  });
+  it('leaves unknown and invalid request starts empty', () => {
+    for (const value of [undefined, null, NaN, Infinity]) {
+      expect(formatRequestStart(value)).toBe('—');
+    }
   });
 });

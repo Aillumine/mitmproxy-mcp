@@ -184,3 +184,24 @@ def test_search_matches_carry_the_package(tmp_path):
 
     assert [m["package"] for m in by_url] == ["com.example.app"]
     assert [m["package"] for m in by_body] == ["com.example.app"]
+
+
+def test_request_start_survives_storage_without_changing_capture_cursor(tmp_path):
+    store = SQLiteTrafficStore(tmp_path / "traffic.db")
+    record = _record(10, b"ok")
+    record.timing = {"requestTime": 3.125}
+    store.add(record)
+    saved = store.get_by_id(record.id)
+    assert saved is not None
+    assert saved.to_summary()["request_started_at"] == 3.125
+    assert saved.to_summary()["timestamp"] == 10.0
+    assert _record(1, b"").to_summary()["request_started_at"] is None
+
+
+def test_legacy_ws_uses_frame_capture_time():
+    record = _record(10, b"hello")
+    record.method = "WS"
+    record.resource_type = "WebSocket"
+    assert record.to_summary()["request_started_at"] == 10.0
+    record.timing = {"requestTime": 3.125}
+    assert record.to_summary()["request_started_at"] == 3.125

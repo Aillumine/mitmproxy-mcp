@@ -1,6 +1,7 @@
 export type TrafficRow = {
   id: string;
   timestamp: number;
+  request_started_at?: number | null;
   method: string;
   url: string;
   domain: string;

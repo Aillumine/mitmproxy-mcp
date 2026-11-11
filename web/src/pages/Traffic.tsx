@@ -20,6 +20,7 @@ import {
   countTrafficByKind,
   filterTrafficByKind,
   groupTrafficByPrefix,
+  formatRequestStart,
   isSelectedInRows,
   looksLikeHtml,
   looksLikeImage,
@@ -42,6 +43,7 @@ import {
   saveTrafficFilter,
   type TrafficDisplayFilter,
 } from './trafficFilter';
+import { loadPersistentTrafficFilter, savePersistentTrafficFilter } from './persistentTrafficFilter';
 import {
   filterRowsByPackage,
   PACKAGE_STORAGE_KEY,
@@ -256,6 +258,21 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
   } | null>(null);
   const [kind, setKind] = useState<TrafficKind>('all');
   const [displayFilter, setDisplayFilter] = useState<TrafficDisplayFilter>(() => loadTrafficFilter());
+  const [filterReady, setFilterReady] = useState(false);
+  const [filterError, setFilterError] = useState<string | null>(null);
+  const filterSaving = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    void loadPersistentTrafficFilter(loadTrafficFilter()).then((saved) => {
+      if (cancelled) return;
+      setDisplayFilter(saved);
+      saveTrafficFilter(saved);
+      setFilterReady(true);
+    }).catch((error: Error) => {
+      if (!cancelled) setFilterError(error.message);
+    });
+    return () => { cancelled = true; };
+  }, []);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterTab, setFilterTab] = useState<'allow' | 'ignore'>('allow');
   const [patternDraft, setPatternDraft] = useState('');
@@ -665,8 +682,20 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
       : null;
 
   function patchDisplayFilter(next: TrafficDisplayFilter) {
-    setDisplayFilter(next);
-    saveTrafficFilter(next);
+    // Wait for durable storage before applying edits; failed saves stay visible.
+    //
+    // 原先只写浏览器且吞掉错误；现在持久化成功才应用，失败保留原规则并提示。
+    if (!filterReady || filterSaving.current) return;
+    filterSaving.current = true;
+    setFilterReady(false);
+    void savePersistentTrafficFilter(next).then(() => {
+      setDisplayFilter(next);
+      saveTrafficFilter(next);
+      setFilterError(null);
+    }).catch((error: Error) => setFilterError(error.message)).finally(() => {
+      filterSaving.current = false;
+      setFilterReady(true);
+    });
   }
 
   async function loadPackages(serial: string) {
@@ -913,8 +942,10 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
           {displayRows.length !== rows.length ? ` / ${rows.length}` : ''} 条
         </span>
       </div>
+      {filterError ? <p className="page-banner warn-banner" role="alert">{filterError}</p> : null}
       {filterOpen ? (
         <div className="traffic-filter-panel" id="traffic-display-filter">
+          <fieldset disabled={!filterReady} style={{ display: 'contents' }}>
           <div className="traffic-filter-bar">
             <label className="traffic-filter-enable">
               <input
@@ -1017,6 +1048,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
               ))
             )}
           </ul>
+          </fieldset>
         </div>
       ) : null}
       <div className="traffic-kinds" role="tablist" aria-label="Traffic kind">
@@ -1107,6 +1139,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                   <th>URL</th>
                   <th>Size</th>
                   <th>Time</th>
+                  <th title="请求开始时间（本地时区）">触发时间</th>
                   <th>cURL</th>
                 </tr>
               </thead>
@@ -1116,7 +1149,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                   return (
                     <Fragment key={group.prefix}>
                       <tr className="traffic-group">
-                        <td colSpan={6}>
+                        <td colSpan={7}>
                           <div className="traffic-group-row">
                             <button
                               type="button"
@@ -1140,6 +1173,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                                 type="button"
                                 className="curl-btn"
                                 title={`只显示 ${hostGlobFromUrl(group.prefix)}`}
+                                disabled={!filterReady}
                                 onClick={() => quickAllowHost(group.prefix)}
                               >
                                 只显示
@@ -1148,6 +1182,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                                 type="button"
                                 className="curl-btn"
                                 title={`忽略 ${hostGlobFromUrl(group.prefix)}`}
+                                disabled={!filterReady}
                                 onClick={() => quickIgnoreHost(group.prefix)}
                               >
                                 忽略
@@ -1207,6 +1242,7 @@ export default function Traffic({ onOpenMock }: TrafficProps) {
                                 </td>
                                 <td>{formatBytes(row.size)}</td>
                                 <td>{row.time ? `${Math.round(row.time)} ms` : '—'}</td>
+                                <td className="mono">{formatRequestStart(row.request_started_at)}</td>
                                 <td
                                   className="copy-cell"
                                   onClick={(event) => event.stopPropagation()}

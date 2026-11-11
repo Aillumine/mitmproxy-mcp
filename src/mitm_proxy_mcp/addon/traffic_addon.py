@@ -943,8 +943,8 @@ async def response(flow):
                 id, timestamp, method, url, domain, status,
                 resource_type, size, time_ms, request_headers,
                 request_body, request_body_size, response_headers, response_body, error,
-                client_port
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                client_port, timing
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             record_id,
             time.time(),
@@ -962,6 +962,10 @@ async def response(flow):
             res_body,
             None,
             client_port(flow),
+            # Keep capture time for polling; expose actual request start separately.
+            #
+            # 保留入库时间供轮询使用，另存请求开始时间，避免把响应完成误作触发。
+            json.dumps({"requestTime": flow.request.timestamp_start}),
         ))
         conn.commit()
         _prune_traffic(conn)
@@ -1056,6 +1060,14 @@ async def websocket_message(flow):
     if not messages:
         return
     msg = messages[-1]
+    # Previously WS rows omitted timing. Record each frame, not the connection
+    # handshake, before mock delays and throttling can shift the capture time.
+    #
+    # 原先 WS 行未保存时间；在 mock 延迟和限速前记录每条消息的时间，
+    # 不使用整条连接共用的握手时间，避免后续消息都显示同一时刻。
+    message_time = getattr(msg, "timestamp", None)
+    if message_time is None:
+        message_time = time.time()
     replay_ids = getattr(msg, "fault_rule_ids", ())
     rule_id = await _apply_ws_mock(flow, msg)
     session = _ws_fault_sessions.get(getattr(flow, "id", None))
@@ -1090,8 +1102,8 @@ async def websocket_message(flow):
                 id, timestamp, method, url, domain, status,
                 resource_type, size, time_ms, request_headers,
                 request_body, request_body_size, response_headers, response_body, error,
-                client_port
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                client_port, timing
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"ws-{counter[0]}",
@@ -1110,6 +1122,7 @@ async def websocket_message(flow):
                 None if from_client else content,
                 None,
                 client_port(flow),
+                json.dumps({"requestTime": message_time}),
             ),
         )
         conn.commit()

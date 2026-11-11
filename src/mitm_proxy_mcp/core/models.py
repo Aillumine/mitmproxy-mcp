@@ -60,6 +60,13 @@ class TrafficRecord:
         return {
             "id": self.id,
             "timestamp": self.timestamp,
+            # Legacy WS rows already timestamp each frame; HTTP rows timestamp
+            # response storage, so only WS can safely use that fallback.
+            #
+            # 旧 WS 记录的时间对应每条消息；HTTP 对应响应入库，故仅 WS 可回退。
+            "request_started_at": self.timing.get(
+                "requestTime", self.timestamp if self.method == "WS" else None
+            ),
             "method": self.method,
             "url": self.url,
             "domain": self.domain,

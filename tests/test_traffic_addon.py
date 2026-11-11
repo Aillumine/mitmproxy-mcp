@@ -642,3 +642,40 @@ def test_mock_response_body_is_stored_even_though_tee_never_runs(addon, tmp_path
     conn.close()
     assert row[0] == 201
     assert row[1] == body
+
+
+def test_response_persists_actual_request_start(addon, tmp_path):
+    from mitm_proxy_mcp.core.sqlite_store import SQLiteTrafficStore
+
+    flow = _http_flow(
+        method="GET", url="https://api.example.com/time",
+        host="api.example.com", content=b"ok",
+    )
+    flow.request.timestamp_start = 123.456
+    run(addon.response(flow))
+    store = SQLiteTrafficStore(tmp_path / "traffic.db")
+    with store._get_conn() as conn:
+        row = conn.execute("SELECT * FROM traffic").fetchone()
+    record = store._row_to_record(row)
+    assert record.to_summary()["request_started_at"] == 123.456
+    assert record.timestamp != 123.456
+
+
+@pytest.mark.parametrize("from_client", [True, False])
+def test_ws_frame_persists_message_time_not_handshake(addon, tmp_path, from_client):
+    from types import SimpleNamespace
+    from mitm_proxy_mcp.core.sqlite_store import SQLiteTrafficStore
+
+    flow = _http_flow(
+        method="GET", url="https://example.com/ws", host="example.com", status=101,
+    )
+    flow.websocket = SimpleNamespace(messages=[SimpleNamespace(
+        from_client=from_client, content=b"hello", timestamp=123.456,
+    )])
+    run(addon.websocket_message(flow))
+    store = SQLiteTrafficStore(tmp_path / "traffic.db")
+    with store._get_conn() as conn:
+        row = conn.execute("SELECT * FROM traffic").fetchone()
+    record = store._row_to_record(row)
+    assert record.to_summary()["request_started_at"] == 123.456
+    assert record.to_summary()["request_started_at"] != flow.request.timestamp_start

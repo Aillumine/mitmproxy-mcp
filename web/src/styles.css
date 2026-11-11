@@ -363,7 +363,9 @@ button:focus-visible {
 .traffic-table th:nth-child(5),
 .traffic-table td:nth-child(5) { width: 72px; }
 .traffic-table th:nth-child(6),
-.traffic-table td:nth-child(6) { width: 72px; }
+.traffic-table td:nth-child(6) { width: 88px; }
+.traffic-table th:nth-child(7),
+.traffic-table td:nth-child(7) { width: 72px; }
 
 .traffic-table th {
   position: sticky;

@@ -354,3 +354,15 @@ export function clampInspectorWidth(desired: number, containerWidth: number): nu
   const max = Math.max(INSPECTOR_MIN_WIDTH, containerWidth - LIST_MIN_WIDTH);
   return Math.min(max, Math.max(INSPECTOR_MIN_WIDTH, desired));
 }
+
+// Show local hours, minutes and seconds instead of a full date to keep the
+// column compact for predominantly same-day captures. Missing times stay blank.
+//
+// 抓包主要在当天查看，因此将完整日期改为时分秒，缩短列宽；缺失时间仍显示占位。
+export function formatRequestStart(timestamp?: number | null): string {
+  if (timestamp == null || !Number.isFinite(timestamp)) return '—';
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}

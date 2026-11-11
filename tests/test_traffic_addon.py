@@ -664,6 +664,7 @@ def test_response_persists_actual_request_start(addon, tmp_path):
 @pytest.mark.parametrize("from_client", [True, False])
 def test_ws_frame_persists_message_time_not_handshake(addon, tmp_path, from_client):
     from types import SimpleNamespace
+
     from mitm_proxy_mcp.core.sqlite_store import SQLiteTrafficStore
 
     flow = _http_flow(

@@ -15,7 +15,6 @@ from mitmproxy.net import encoding as net_encoding
 
 from mitm_proxy_mcp.addon.ws_faults import FaultSession, FaultTransport
 from mitm_proxy_mcp.addon.ws_server import MockWebSocketServer, socketio_error
-
 from mitm_proxy_mcp.core.throttle import (
     ThrottleConfig,
     host_matches,

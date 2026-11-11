@@ -4,6 +4,7 @@ import Android from './pages/Android';
 import Ios from './pages/Ios';
 import Mock from './pages/Mock';
 import Proxy from './pages/Proxy';
+import ProxyAddress from './pages/ProxyAddress';
 import { resolveAndroidProxyPort } from './pages/androidState';
 import {
   DEFAULT_PROXY_HOST,
@@ -232,7 +233,7 @@ export default function App() {
       <div className="main">
         <header className="topbar">
           <span className={running ? 'status-dot on' : 'status-dot'} aria-hidden="true" />
-          <span className="mono" title="代理监听地址">
+          <span className="mono" title="当前设备连接地址（代理监听所有网卡）">
             {formatProxyListen(listenHost, runtimePort)}
           </span>
           <span className="muted">{captureTarget || '—'}</span>
@@ -264,6 +265,7 @@ export default function App() {
             停止
           </button>
         </header>
+        {sessionReady ? <ProxyAddress port={runtimePort} onHost={setListenHost} /> : null}
         {sessionExpired ? <p className="page-banner warn-banner">{SESSION_EXPIRED_MESSAGE}</p> : null}
         {actionBanner && !sessionExpired ? <p className="page-banner warn-banner">{actionBanner}</p> : null}
         <section className="workspace" aria-label={page}>
